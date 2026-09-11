@@ -1,0 +1,245 @@
+name: publish Seed4J main snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Select the current upstream head or retry the recorded failure
+        required: true
+        default: head
+        type: choice
+        options:
+          - head
+          - retry-last-failed
+  schedule:
+    - cron: "17 6 * * 1"
+    - cron: "17 6 * * 0,2-6"
+
+concurrency:
+  group: seed4j-main-snapshot-publisher
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  qualify:
+    name: qualify immutable upstream candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+    outputs:
+      outcome: ${{ steps.candidate.outputs.outcome }}
+      identity: ${{ steps.candidate.outputs.identity }}
+      reason: ${{ steps.candidate.outputs.reason }}
+      upstreamSha: ${{ steps.candidate.outputs['upstream-sha'] }}
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e
+        with:
+          node-version: 24.12.0
+          cache: npm
+
+      - name: Install trusted publisher dependencies
+        run: npm ci
+
+      - name: Qualify exact official upstream revision
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_EVENT: ${{ github.event_name }}
+          PUBLISHER_OPERATION: ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'head' }}
+          PUBLISHER_REF: ${{ github.ref }}
+          PUBLISHER_SCHEDULE: ${{ github.event.schedule }}
+        run: node scripts/qualify-candidate.cjs --config config/publisher.json
+
+      - name: Record expected skip
+        if: steps.candidate.outputs.outcome == 'skip'
+        env:
+          REASON: ${{ steps.candidate.outputs.reason }}
+        run: echo "Publisher skipped safely because ${REASON}." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build unprivileged upstream candidate
+    needs: qualify
+    if: needs.qualify.outputs.outcome == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted publisher scripts
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          path: publisher
+          persist-credentials: false
+
+      - name: Checkout exact untrusted upstream source
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          repository: seed4j/seed4j
+          ref: ${{ needs.qualify.outputs.upstreamSha }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e
+        with:
+          node-version: 24.12.0
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274d780752246b4c7e1e55e87e80049035ac2
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - name: Install trusted publisher dependencies
+        working-directory: publisher
+        run: npm ci
+
+      - name: Apply personal publication overlay and provenance
+        env:
+          PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
+        run: node publisher/scripts/prepare-upstream.cjs --checkout upstream --identity "$PUBLISHER_IDENTITY"
+
+      - name: Install upstream dependencies
+        working-directory: upstream
+        run: npm ci
+
+      - name: Run applicable upstream lint
+        working-directory: upstream
+        run: npm run lint:ci
+
+      - name: Run complete upstream verification
+        working-directory: upstream
+        run: ./mvnw --batch-mode -ntp clean verify
+
+      - name: Collect the exact data-only candidate bundle
+        env:
+          PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
+        run: node publisher/scripts/collect-candidate.cjs --checkout upstream --output publisher-bundle --identity "$PUBLISHER_IDENTITY"
+
+      - name: Upload data-only candidate bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: publisher-candidate-${{ needs.qualify.outputs.upstreamSha }}
+          path: publisher-bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: deploy verified data-only bundle
+    needs:
+      - qualify
+      - build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.qualify.outputs.outcome == 'publish' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: central-snapshots
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout clean trusted publisher
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          persist-credentials: false
+
+      - name: Download data-only candidate bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: publisher-candidate-${{ needs.qualify.outputs.upstreamSha }}
+          path: publisher-bundle
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e
+        with:
+          node-version: 24.12.0
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@de7274d780752246b4c7e1e55e87e80049035ac2
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Install trusted publisher dependencies
+        run: npm ci
+
+      - name: Verify and deploy through the pinned Maven goal
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+        run: node scripts/deploy-candidate.cjs execute --bundle publisher-bundle --settings "$RUNNER_TEMP/central-settings.xml"
+
+  report:
+    name: report publisher outcome
+    needs:
+      - qualify
+      - build
+      - deploy
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted publisher reporting code
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e
+        with:
+          node-version: 24.12.0
+          cache: npm
+
+      - name: Install trusted publisher dependencies
+        run: npm ci
+
+      - name: Create, update, close, or skip the single failure issue
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
+          PUBLISHER_OUTCOME: ${{ needs.qualify.outputs.outcome }}
+          PUBLISHER_REASON: ${{ needs.qualify.outputs.reason }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/report-result.cjs
+
+  token-rotation:
+    name: report Central token rotation status
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout trusted publisher token policy
+        uses: actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e
+        with:
+          node-version: 24.12.0
+          cache: npm
+
+      - name: Install trusted publisher dependencies
+        run: npm ci
+
+      - name: Create, update, close, or skip the token rotation warning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/token-rotation.cjs --config config/publisher.json

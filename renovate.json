@@ -1,0 +1,29 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "automerge": false,
+  "dependencyDashboard": true,
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "7 days",
+  "packageRules": [
+    {
+      "automerge": false,
+      "description": "Keep GitHub Actions immutable while proposing reviewed digest updates",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true
+    },
+    {
+      "automerge": false,
+      "description": "Keep Node development tooling on exact reviewed versions",
+      "matchManagers": ["npm"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "automerge": false,
+      "description": "Require review for Maven Wrapper runtime updates",
+      "matchManagers": ["maven-wrapper"],
+      "rangeStrategy": "pin"
+    }
+  ],
+  "rangeStrategy": "pin",
+  "schedule": ["before 06:00 on monday"]
+}

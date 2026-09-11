@@ -1,0 +1,19 @@
+{
+  "name": "seed4j-main-snapshots-publisher",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Trusted automation for unofficial Seed4J main snapshots",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dry-run": "node scripts/dry-run.cjs",
+    "test": "node --test test/*.test.cjs",
+    "prettier:check": "prettier --check .",
+    "prettier:format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
