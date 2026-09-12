@@ -43,7 +43,7 @@ test("a qualified failure creates the single marked failure issue with determini
       "npm ci failed\nAuthorization: Bearer secret-value\nregistry returned 503",
     buildResult: "failure",
     encodedIdentity: encodeIdentity(identity),
-    now: "2026-09-11T10:20:30Z",
+    now: "2026-09-11T10:20:30.787Z",
     outcome: "publish",
     reason: "snapshot-absent",
     repository: "renanfranca/seed4j-main-snapshots",
@@ -60,6 +60,11 @@ test("a qualified failure creates the single marked failure issue with determini
   assert.deepEqual(calls[1].options.body.assignees, ["renanfranca"]);
   assert.match(calls[1].options.body.body, /failure-state:start/);
   assert.match(calls[1].options.body.body, /Stage: `build`/);
+  assert.match(
+    calls[1].options.body.body,
+    /- 2026-09-11T10:20:30Z \| build \|/,
+  );
+  assert.doesNotMatch(calls[1].options.body.body, /\.787Z/);
   assert.match(calls[1].options.body.body, /registry returned 503/);
   assert.doesNotMatch(calls[1].options.body.body, /snapshot-absent/);
   assert.doesNotMatch(calls[1].options.body.body, /secret-value/);

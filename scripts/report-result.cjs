@@ -1,5 +1,6 @@
 const { decodeIdentity } = require("./publisher-policy.cjs");
 const {
+  canonicalPublisherTimestamp,
   failureIssueUpdate,
   successIssueResolution,
 } = require("./operations-policy.cjs");
@@ -94,7 +95,7 @@ async function reportPublisherResult({
         reason: qualification.reason,
         stage,
       }),
-      failedAt: now,
+      failedAt: canonicalPublisherTimestamp(now),
       identity,
       stage,
       workflowRunUrl,
@@ -227,7 +228,7 @@ async function run() {
     deployDiagnostic: process.env.DEPLOY_DIAGNOSTIC,
     deployResult: process.env.DEPLOY_RESULT,
     encodedIdentity: process.env.PUBLISHER_IDENTITY,
-    now: new Date().toISOString().replace(".000Z", "Z"),
+    now: new Date().toISOString(),
     outcome: process.env.PUBLISHER_OUTCOME,
     qualifyResult: process.env.QUALIFY_RESULT,
     reason: process.env.PUBLISHER_REASON,
