@@ -24,7 +24,7 @@ test("qualifies official main head through the exact workflow and public Central
   const result = await qualifyPublication({
     config: baseConfig,
     event: "workflow_dispatch",
-    now: "2026-09-11T12:00:00Z",
+    now: "2026-09-11T12:00:00.787Z",
     operation: "head",
     publisherRepository: "renanfranca/seed4j-main-snapshots",
     ref: "refs/heads/main",
@@ -60,7 +60,7 @@ test("scheduled runs skip safely before network access until the pilot and selec
     await qualifyPublication({
       config: baseConfig,
       event: "schedule",
-      now: "2026-09-14T06:17:00Z",
+      now: "not-a-runtime-timestamp",
       operation: "head",
       publisherRepository: "renanfranca/seed4j-main-snapshots",
       ref: "refs/heads/main",
@@ -73,7 +73,7 @@ test("scheduled runs skip safely before network access until the pilot and selec
     await qualifyPublication({
       config: { ...baseConfig, pilotCompleted: true },
       event: "schedule",
-      now: "2026-09-15T06:17:00Z",
+      now: "not-a-runtime-timestamp",
       operation: "head",
       publisherRepository: "renanfranca/seed4j-main-snapshots",
       ref: "refs/heads/main",
@@ -112,6 +112,32 @@ test("missing or unsuccessful official workflow state is an expected skip withou
     upstreamSha: sha,
   });
   assert.equal(requests.length, 0);
+});
+
+test("invalid publisher runtime time fails before token and retention policies", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: 404,
+    workflowConclusion: "success",
+  });
+
+  const result = await qualificationResult({
+    config: baseConfig,
+    event: "workflow_dispatch",
+    now: "2026-13-01T12:00:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.equal(
+    result.reason,
+    "Invalid publisher runtime timestamp '2026-13-01T12:00:00Z'.",
+  );
+  assert.equal(result.identity.upstreamSha, sha);
+  assert.equal(result.upstreamSha, sha);
+  assert.equal(requests.length, 1);
 });
 
 test("retry reads the sole marked failure, verifies official facts and reachability, and reuses its identity", async () => {
@@ -177,7 +203,7 @@ test("a dispatch from any ref other than publisher main skips before network or 
   const result = await qualifyPublication({
     config: baseConfig,
     event: "workflow_dispatch",
-    now: "2026-09-11T12:00:00Z",
+    now: "not-a-runtime-timestamp",
     operation: "head",
     publisherRepository: "renanfranca/seed4j-main-snapshots",
     ref: "refs/heads/feature",

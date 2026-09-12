@@ -177,6 +177,22 @@ function date(value, label) {
   return parsed;
 }
 
+function canonicalPublisherTimestamp(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value ?? "")) {
+    throw new Error(`Invalid publisher runtime timestamp '${value ?? ""}'.`);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    throw new Error(`Invalid publisher runtime timestamp '${value}'.`);
+  }
+  const canonicalWithMilliseconds = parsed.toISOString();
+  const canonicalWithSeconds = `${canonicalWithMilliseconds.slice(0, 19)}Z`;
+  if (value !== canonicalWithSeconds && value !== canonicalWithMilliseconds) {
+    throw new Error(`Invalid publisher runtime timestamp '${value}'.`);
+  }
+  return canonicalWithSeconds;
+}
+
 function validatePublisherConfig(config) {
   const expectedKeys = [
     "centralTokenExpiresOn",
@@ -253,6 +269,7 @@ function validPercent(value) {
 }
 
 module.exports = {
+  canonicalPublisherTimestamp,
   failureIssueUpdate,
   sanitizeDiagnostic,
   successIssueResolution,

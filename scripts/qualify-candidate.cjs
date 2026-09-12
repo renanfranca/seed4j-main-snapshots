@@ -8,6 +8,7 @@ const {
   retentionDecision,
 } = require("./publisher-policy.cjs");
 const {
+  canonicalPublisherTimestamp,
   sanitizeDiagnostic,
   validatePublisherConfig,
 } = require("./operations-policy.cjs");
@@ -67,11 +68,15 @@ async function qualifyPublication({
     if (qualification.outcome === "skip") {
       return qualification;
     }
-    requireUsableRecordedToken(validatedConfig.centralTokenExpiresOn, now);
+    const publisherTimestamp = canonicalPublisherTimestamp(now);
+    requireUsableRecordedToken(
+      validatedConfig.centralTokenExpiresOn,
+      publisherTimestamp,
+    );
     const retention = retentionDecision({
       centralMetadata: await centralMetadata(resolved.identity, request),
       identity: resolved.identity,
-      now,
+      now: publisherTimestamp,
     });
     return Object.freeze({
       ...(retention.outcome === "publish"
@@ -398,7 +403,7 @@ async function run() {
       await qualificationResult({
         config: readPublisherConfig(configPath),
         event: process.env.PUBLISHER_EVENT,
-        now: new Date().toISOString().replace(".000Z", "Z"),
+        now: new Date().toISOString(),
         operation: process.env.PUBLISHER_OPERATION,
         publisherRepository: process.env.GITHUB_REPOSITORY,
         ref: process.env.PUBLISHER_REF,

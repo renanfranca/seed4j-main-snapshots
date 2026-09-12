@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  canonicalPublisherTimestamp,
   failureIssueUpdate,
   successIssueResolution,
   tokenRotationAction,
@@ -104,6 +105,32 @@ test("warns thirty days before the recorded Central token expiry and closes the 
       issueNumber: 17,
     },
   );
+});
+
+test("canonicalizes publisher runtime timestamps to whole UTC seconds", () => {
+  assert.equal(
+    canonicalPublisherTimestamp("2026-09-12T14:25:30Z"),
+    "2026-09-12T14:25:30Z",
+  );
+  assert.equal(
+    canonicalPublisherTimestamp("2026-09-12T14:25:30.000Z"),
+    "2026-09-12T14:25:30Z",
+  );
+  assert.equal(
+    canonicalPublisherTimestamp("2026-09-12T14:25:30.787Z"),
+    "2026-09-12T14:25:30Z",
+  );
+  for (const timestamp of [
+    "2026-02-30T14:25:30Z",
+    "2026-13-01T14:25:30Z",
+    "2026-09-12T14:25:30.78Z",
+    "2026-09-12T14:25:30+00:00",
+  ]) {
+    assert.throws(
+      () => canonicalPublisherTimestamp(timestamp),
+      /Invalid publisher runtime timestamp/,
+    );
+  }
 });
 
 test("keeps scheduled publication weekly until the pilot and an explicit eighty-percent quota review permit daily mode", () => {
