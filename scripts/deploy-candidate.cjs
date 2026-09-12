@@ -2,9 +2,17 @@ const { closeSync, openSync, unlinkSync, writeFileSync } = require("node:fs");
 const { join, resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { verifyCandidateBundle } = require("./artifact-policy.cjs");
+const { decodeIdentity } = require("./publisher-policy.cjs");
 
-function buildDeploymentPlan({ bundleDirectory, settingsPath }) {
-  const manifest = verifyCandidateBundle(bundleDirectory);
+function buildDeploymentPlan({
+  bundleDirectory,
+  encodedIdentity,
+  settingsPath,
+}) {
+  const manifest = verifyCandidateBundle(
+    bundleDirectory,
+    decodeIdentity(encodedIdentity),
+  );
   const prefix = join(
     bundleDirectory,
     `${manifest.publication.artifactId}-${manifest.publication.version}`,
@@ -35,6 +43,7 @@ function buildDeploymentPlan({ bundleDirectory, settingsPath }) {
 
 function executeDeployment({
   bundleDirectory,
+  encodedIdentity,
   environment = process.env,
   password,
   repositoryDirectory = resolve(__dirname, ".."),
@@ -43,7 +52,11 @@ function executeDeployment({
   username,
 }) {
   requireCredentials(username, password);
-  const plan = buildDeploymentPlan({ bundleDirectory, settingsPath });
+  const plan = buildDeploymentPlan({
+    bundleDirectory,
+    encodedIdentity,
+    settingsPath,
+  });
   writePrivateSettings({ password, settingsPath, username });
   const {
     CENTRAL_PASSWORD: _password,
@@ -117,7 +130,7 @@ function parseRequest(arguments_) {
     const option = options[index];
     const value = options[index + 1];
     if (
-      !["--bundle", "--settings"].includes(option) ||
+      !["--bundle", "--identity", "--settings"].includes(option) ||
       !value ||
       value.startsWith("--") ||
       values[option]
@@ -126,11 +139,14 @@ function parseRequest(arguments_) {
     }
     values[option] = value;
   }
-  if (!values["--bundle"] || !values["--settings"]) {
-    throw new Error("Deployment requires --bundle and --settings.");
+  if (!values["--bundle"] || !values["--identity"] || !values["--settings"]) {
+    throw new Error(
+      "Deployment requires --bundle, --identity, and --settings.",
+    );
   }
   return {
     bundleDirectory: values["--bundle"],
+    encodedIdentity: values["--identity"],
     operation,
     settingsPath: values["--settings"],
   };
@@ -143,6 +159,7 @@ function run() {
       JSON.stringify(
         buildDeploymentPlan({
           bundleDirectory: request.bundleDirectory,
+          encodedIdentity: request.encodedIdentity,
           settingsPath: request.settingsPath,
         }),
         null,
@@ -153,6 +170,7 @@ function run() {
   }
   const result = executeDeployment({
     bundleDirectory: request.bundleDirectory,
+    encodedIdentity: request.encodedIdentity,
     password: process.env.CENTRAL_PASSWORD,
     settingsPath: request.settingsPath,
     username: process.env.CENTRAL_USERNAME,

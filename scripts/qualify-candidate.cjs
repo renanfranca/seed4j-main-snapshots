@@ -1,3 +1,4 @@
+const { createHash } = require("node:crypto");
 const { appendFileSync } = require("node:fs");
 const {
   deriveSnapshotIdentity,
@@ -6,7 +7,10 @@ const {
   qualifyCandidate,
   retentionDecision,
 } = require("./publisher-policy.cjs");
-const { validatePublisherConfig } = require("./operations-policy.cjs");
+const {
+  sanitizeDiagnostic,
+  validatePublisherConfig,
+} = require("./operations-policy.cjs");
 const { readPublisherConfig } = require("./publisher-config.cjs");
 
 const API_ROOT = "https://api.github.com";
@@ -84,6 +88,19 @@ async function qualifyPublication({
   }
 }
 
+async function qualificationResult(invocation) {
+  try {
+    return await qualifyPublication(invocation);
+  } catch (error) {
+    return Object.freeze({
+      ...(error.identity ? { identity: error.identity } : {}),
+      outcome: "failure",
+      reason: sanitizeDiagnostic(error.message),
+      ...(error.identity ? { upstreamSha: error.identity.upstreamSha } : {}),
+    });
+  }
+}
+
 function requireInvocation({
   event,
   operation,
@@ -136,9 +153,14 @@ async function resolveHeadCandidate(request) {
   const upstreamSha = commitResponse.body?.sha;
   const upstreamCommitTimestamp = commitResponse.body?.commit?.committer?.date;
   const upstreamPomVersion = await officialPomVersion(upstreamSha, request);
+  const upstreamLicenseSha256 = await officialLicenseSha256(
+    upstreamSha,
+    request,
+  );
   return Object.freeze({
     identity: deriveSnapshotIdentity({
       upstreamCommitTimestamp,
+      upstreamLicenseSha256,
       upstreamPomVersion,
       upstreamSha,
     }),
@@ -168,12 +190,18 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
     `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/commits/${recordedIdentity.upstreamSha}`,
   );
   requireStatus(commitResponse, 200, "recorded official upstream commit");
+  const upstreamPomVersion = await officialPomVersion(
+    recordedIdentity.upstreamSha,
+    request,
+  );
+  const upstreamLicenseSha256 = await officialLicenseSha256(
+    recordedIdentity.upstreamSha,
+    request,
+  );
   const officialIdentity = deriveSnapshotIdentity({
     upstreamCommitTimestamp: commitResponse.body?.commit?.committer?.date,
-    upstreamPomVersion: await officialPomVersion(
-      recordedIdentity.upstreamSha,
-      request,
-    ),
+    upstreamLicenseSha256,
+    upstreamPomVersion,
     upstreamSha: commitResponse.body?.sha,
   });
   if (encodeIdentity(officialIdentity) !== encodeIdentity(recordedIdentity)) {
@@ -225,6 +253,26 @@ async function officialPomVersion(upstreamSha, request) {
     );
   }
   return xmlValue(metadata, "version");
+}
+
+async function officialLicenseSha256(upstreamSha, request) {
+  const licenseResponse = await request(
+    `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/contents/LICENSE.txt?ref=${upstreamSha}`,
+  );
+  requireStatus(licenseResponse, 200, "official upstream license");
+  if (
+    licenseResponse.body?.encoding !== "base64" ||
+    typeof licenseResponse.body?.content !== "string"
+  ) {
+    throw new Error(
+      "Official upstream license response is not base64 content.",
+    );
+  }
+  const license = Buffer.from(
+    licenseResponse.body.content.replace(/\s/g, ""),
+    "base64",
+  );
+  return createHash("sha256").update(license).digest("hex");
 }
 
 function xmlValue(fragment, element) {
@@ -345,27 +393,23 @@ function parseRequest(arguments_) {
 
 async function run() {
   const { configPath } = parseRequest(process.argv.slice(2));
-  const invocation = {
-    config: readPublisherConfig(configPath),
-    event: process.env.PUBLISHER_EVENT,
-    now: new Date().toISOString().replace(".000Z", "Z"),
-    operation: process.env.PUBLISHER_OPERATION,
-    publisherRepository: process.env.GITHUB_REPOSITORY,
-    ref: process.env.PUBLISHER_REF,
-    request: requestWithGitHubToken,
-    schedule: process.env.PUBLISHER_SCHEDULE,
-  };
   try {
-    writeResult(await qualifyPublication(invocation));
+    writeResult(
+      await qualificationResult({
+        config: readPublisherConfig(configPath),
+        event: process.env.PUBLISHER_EVENT,
+        now: new Date().toISOString().replace(".000Z", "Z"),
+        operation: process.env.PUBLISHER_OPERATION,
+        publisherRepository: process.env.GITHUB_REPOSITORY,
+        ref: process.env.PUBLISHER_REF,
+        request: requestWithGitHubToken,
+        schedule: process.env.PUBLISHER_SCHEDULE,
+      }),
+    );
   } catch (error) {
-    if (!error.identity) {
-      throw error;
-    }
     writeResult({
-      identity: error.identity,
       outcome: "failure",
-      reason: error.message,
-      upstreamSha: error.identity.upstreamSha,
+      reason: sanitizeDiagnostic(error.message),
     });
   }
 }
@@ -396,4 +440,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseRequest, qualifyPublication };
+module.exports = { parseRequest, qualificationResult, qualifyPublication };

@@ -12,8 +12,8 @@ io.github.renanfranca:seed4j-main-snapshot:<derived-snapshot-version>
 
 ## Publication contract
 
-Every candidate is bound to the official `seed4j/seed4j` full commit SHA, that commit's UTC timestamp, and the upstream
-POM version. Those facts deterministically produce:
+Every candidate is bound to the official `seed4j/seed4j` full commit SHA, that commit's UTC timestamp, the upstream POM
+version, and the SHA-256 digest of the official license at that revision. Those facts deterministically produce:
 
 ```text
 <upstream-base>-main.<yyyyMMdd>.<HHmmss>.<first-12-sha>-SNAPSHOT
@@ -42,10 +42,12 @@ official commit, official `github-actions.yml` result, public Central metadata, 
 build job checks out the exact qualified SHA without persisted credentials, applies only personal publication metadata
 and provenance, then runs upstream `npm ci`, `npm run lint:ci`, and `./mvnw clean verify`.
 
-The deploy job is separate and main-only. It starts from a clean trusted publisher checkout, downloads only the
-data-only bundle, rejects unexpected files and manifest fields, rechecks every digest and published POM field, and runs
-only Maven Wrapper 3.9.16 with `maven-deploy-plugin:3.1.4:deploy-file`. It never runs upstream scripts, Maven lifecycle,
-JARs, or executable output.
+The deploy job is separate and main-only. It starts from a clean trusted publisher checkout and receives the opaque
+identity directly from qualification. Before creating Maven settings or a deployment plan, it decodes that trusted
+identity, requires an exact full-SHA and publication-identity match with the downloaded manifest, rechecks every digest
+and every nonofficial, legal, source, publisher, SCM, and repository POM field, and reads the main JAR as data to verify
+its exact provenance, notice, and license digest. It then runs only Maven Wrapper 3.9.16 with
+`maven-deploy-plugin:3.1.4:deploy-file`; it never runs upstream scripts, Maven lifecycle, JARs, or executable output.
 
 Only this deploy job references the protected `central-snapshots` GitHub Environment. Credentials are written to a
 temporary mode-`0600` Maven settings file, removed after Maven exits, scrubbed from the child environment, and never
@@ -64,14 +66,14 @@ Before any pilot, the maintainer must:
    `CENTRAL_USERNAME` and `CENTRAL_PASSWORD` as environment secrets;
 4. create the `publisher-failure` and `publisher-token-rotation` labels;
 5. protect `main`, require the `tests` check and pull requests, and disable force pushes and branch deletion; and
-6. record the token expiry as `centralTokenExpiresAt` in `config/publisher.json`.
+6. record the token expiry as `centralTokenExpiresOn` in `config/publisher.json`.
 
 The automation does not create credentials, verify namespaces, change repository/environment protection, purchase a
 Central plan, or create external configuration.
 
 ## Pilot and schedule policy
 
-The repository starts with `pilotCompleted=false`, `scheduleMode=weekly`, `centralTokenExpiresAt=null`, and no quota
+The repository starts with `pilotCompleted=false`, `scheduleMode=weekly`, `centralTokenExpiresOn=null`, and no quota
 review. Scheduled runs therefore stop safely before candidate resolution. The first publication must be a manually
 observed pilot dispatched from `main` with operation `head`; the protected-environment approval is the final human gate.
 
@@ -92,7 +94,10 @@ a failure issue.
 
 A failure after qualification creates or updates one `[publisher] Seed4J main snapshot failure` issue with the
 `publisher-failure` label, assignment and mention for `@renanfranca`, the failed stage, workflow run, full upstream SHA,
-derived version, concise diagnostic, accumulated history, and one deterministic retry marker.
+derived version, the actual latest build or deploy diagnostic sanitized to one bounded line, accumulated history, and
+one deterministic retry marker. A genuine qualification failure before trusted identity and provenance are complete
+updates the same assigned issue as a distinct nonretryable qualification failure; it names the stage and workflow run
+without inventing a SHA, version, or retry marker.
 
 Dispatch `retry-last-failed` only after correcting the trusted publisher or external outage. Retry refuses free-form
 SHAs and requires exactly one marked issue, re-fetches and re-derives the official identity, confirms reachability from

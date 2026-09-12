@@ -12,6 +12,8 @@ const identity = Object.freeze({
   artifactId: "seed4j-main-snapshot",
   groupId: "io.github.renanfranca",
   upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+  upstreamLicenseSha256:
+    "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",

@@ -106,6 +106,7 @@ publisher=renanfranca
 release-channel=unofficial-main-snapshot
 upstream-commit=${identity.upstreamSha}
 upstream-commit-timestamp=${identity.upstreamCommitTimestamp}
+upstream-license-sha256=${identity.upstreamLicenseSha256}
 upstream-pom-version=${identity.upstreamPomVersion}
 upstream-repository=https://github.com/seed4j/seed4j
 version=${identity.version}
@@ -157,4 +158,10 @@ if (require.main === module) {
   }
 }
 
-module.exports = { notice, parseRequest, prepareUpstream, provenance };
+module.exports = {
+  notice,
+  parseRequest,
+  personalPomMetadata,
+  prepareUpstream,
+  provenance,
+};

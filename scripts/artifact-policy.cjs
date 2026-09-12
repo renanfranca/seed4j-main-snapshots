@@ -9,7 +9,17 @@ const {
   writeFileSync,
 } = require("node:fs");
 const { join } = require("node:path");
-const { deriveSnapshotIdentity } = require("./publisher-policy.cjs");
+const {
+  notice,
+  personalPomMetadata,
+  provenance,
+} = require("./prepare-upstream.cjs");
+const {
+  deriveSnapshotIdentity,
+  encodeIdentity,
+  requireDerivedIdentity,
+} = require("./publisher-policy.cjs");
+const { readZipEntry } = require("./zip-policy.cjs");
 
 const CENTRAL_SNAPSHOT_REPOSITORY =
   "https://central.sonatype.com/repository/maven-snapshots/";
@@ -65,6 +75,7 @@ function createCandidateManifest({ candidateDirectory, identity }) {
     schemaVersion: 1,
     upstream: Object.freeze({
       commitTimestamp: identity.upstreamCommitTimestamp,
+      licenseSha256: identity.upstreamLicenseSha256,
       pomVersion: identity.upstreamPomVersion,
       sha: identity.upstreamSha,
     }),
@@ -99,7 +110,8 @@ function artifactDefinitions(identity) {
   ];
 }
 
-function verifyCandidateBundle(bundleDirectory) {
+function verifyCandidateBundle(bundleDirectory, expectedIdentity) {
+  const trustedIdentity = requireDerivedIdentity(expectedIdentity);
   requireRegularFile(join(bundleDirectory, "candidate-manifest.json"));
   let manifest;
   try {
@@ -110,6 +122,11 @@ function verifyCandidateBundle(bundleDirectory) {
     throw new Error("Candidate manifest is missing or is not valid JSON.");
   }
   const identity = requireValidManifest(manifest);
+  if (encodeIdentity(identity) !== encodeIdentity(trustedIdentity)) {
+    throw new Error(
+      "Candidate manifest does not match the trusted qualified identity.",
+    );
+  }
   requirePublicationPom({ bundleDirectory, identity, manifest });
   const expectedFileNames = new Set([
     "candidate-manifest.json",
@@ -144,6 +161,7 @@ function verifyCandidateBundle(bundleDirectory) {
       );
     }
   }
+  requireEmbeddedPublicationMetadata({ bundleDirectory, identity, manifest });
   return manifest;
 }
 
@@ -179,11 +197,12 @@ function requireValidManifest(manifest) {
   );
   requireKeys(
     manifest.upstream,
-    ["commitTimestamp", "pomVersion", "sha"],
+    ["commitTimestamp", "licenseSha256", "pomVersion", "sha"],
     "manifest upstream",
   );
   const identity = deriveSnapshotIdentity({
     upstreamCommitTimestamp: manifest.upstream.commitTimestamp,
+    upstreamLicenseSha256: manifest.upstream.licenseSha256,
     upstreamPomVersion: manifest.upstream.pomVersion,
     upstreamSha: manifest.upstream.sha,
   });
@@ -242,37 +261,63 @@ function requirePublicationPom({ bundleDirectory, identity, manifest }) {
     );
   }
   const metadata = /<\/parent>\s*([\s\S]*?)<properties(?:\s|>)/.exec(pom)?.[1];
-  if (
-    !metadata ||
-    pomValue(metadata, "groupId") !== identity.groupId ||
-    pomValue(metadata, "artifactId") !== identity.artifactId ||
-    pomValue(metadata, "version") !== identity.version
-  ) {
+  if (!metadata || metadata.trim() !== personalPomMetadata(identity).trim()) {
     throw new Error(
-      "Candidate published POM identity does not match the manifest allowlist.",
-    );
-  }
-  const repositories = [
-    ...metadata.matchAll(
-      /<snapshotRepository>([\s\S]*?)<\/snapshotRepository>/g,
-    ),
-  ];
-  if (
-    repositories.length !== 1 ||
-    pomValue(repositories[0][1], "id") !== "central-snapshots" ||
-    pomValue(repositories[0][1], "url") !== CENTRAL_SNAPSHOT_REPOSITORY
-  ) {
-    throw new Error(
-      "Candidate published POM snapshot repository does not match the allowlist.",
+      "Candidate published POM nonofficial publication metadata does not match the trusted policy.",
     );
   }
 }
 
-function pomValue(fragment, element) {
-  const matches = [
-    ...fragment.matchAll(new RegExp(`<${element}>([^<]+)<\\/${element}>`, "g")),
-  ];
-  return matches.length === 1 ? matches[0][1].trim() : undefined;
+function requireEmbeddedPublicationMetadata({
+  bundleDirectory,
+  identity,
+  manifest,
+}) {
+  const mainArtifact = manifest.artifacts.find(
+    (artifact) => artifact.role === "main",
+  );
+  const mainJar = join(bundleDirectory, mainArtifact.fileName);
+  let embeddedProvenance;
+  try {
+    embeddedProvenance = readZipEntry(
+      mainJar,
+      "META-INF/seed4j-main-snapshot.properties",
+    );
+  } catch (error) {
+    throw new Error(
+      `Main JAR embedded provenance is invalid: ${error.message}`,
+    );
+  }
+  if (embeddedProvenance.toString("utf8") !== provenance(identity)) {
+    throw new Error(
+      "Main JAR embedded provenance does not match the trusted qualified identity.",
+    );
+  }
+  let embeddedLicense;
+  let embeddedNotice;
+  try {
+    embeddedLicense = readZipEntry(
+      mainJar,
+      "META-INF/LICENSE-seed4j-main-snapshot.txt",
+    );
+    embeddedNotice = readZipEntry(
+      mainJar,
+      "META-INF/NOTICE-seed4j-main-snapshot.txt",
+    );
+  } catch (error) {
+    throw new Error(
+      `Main JAR embedded legal metadata is invalid: ${error.message}`,
+    );
+  }
+  if (
+    createHash("sha256").update(embeddedLicense).digest("hex") !==
+      identity.upstreamLicenseSha256 ||
+    embeddedNotice.toString("utf8") !== notice(identity)
+  ) {
+    throw new Error(
+      "Main JAR embedded legal metadata does not match the trusted qualified facts.",
+    );
+  }
 }
 
 function requireKeys(value, expectedKeys, label) {

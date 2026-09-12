@@ -20,29 +20,30 @@ function failureIssueUpdate({ existingBody, failure }) {
 }
 
 function failureIssueBody(failure, history) {
-  const state = {
-    artifactId: failure.identity.artifactId,
-    derivedVersion: failure.identity.version,
-    groupId: failure.identity.groupId,
-    upstreamCommitTimestamp: failure.identity.upstreamCommitTimestamp,
-    upstreamPomVersion: failure.identity.upstreamPomVersion,
-    upstreamSha: failure.identity.upstreamSha,
-  };
+  const identity = failure.identity;
+  const identitySummary = identity
+    ? `- Upstream SHA: \`${identity.upstreamSha}\`
+- Derived version: \`${identity.version}\``
+    : `- Identity and provenance: unavailable; qualification failed before trusted facts were complete.
+- Retry state: not retryable until a later run qualifies a complete identity.`;
+  const retryState = identity
+    ? `
+${FAILURE_STATE_START}
+\`\`\`json
+${JSON.stringify(failureState(identity), null, 2)}
+\`\`\`
+${FAILURE_STATE_END}
+`
+    : "";
   return `@renanfranca the personal Seed4J main snapshot publisher needs attention.
 
 ## Latest failure
 
 - Stage: \`${failure.stage}\`
 - Workflow run: ${failure.workflowRunUrl}
-- Upstream SHA: \`${failure.identity.upstreamSha}\`
-- Derived version: \`${failure.identity.version}\`
-- Diagnostic: ${singleLine(failure.diagnostic)}
-
-${FAILURE_STATE_START}
-\`\`\`json
-${JSON.stringify(state, null, 2)}
-\`\`\`
-${FAILURE_STATE_END}
+${identitySummary}
+- Diagnostic: ${sanitizeDiagnostic(failure.diagnostic)}
+${retryState}
 
 ## Failure history
 
@@ -50,6 +51,18 @@ ${FAILURE_HISTORY_START}
 ${history.join("\n")}
 ${FAILURE_HISTORY_END}
 `;
+}
+
+function failureState(identity) {
+  return {
+    artifactId: identity.artifactId,
+    derivedVersion: identity.version,
+    groupId: identity.groupId,
+    upstreamCommitTimestamp: identity.upstreamCommitTimestamp,
+    upstreamLicenseSha256: identity.upstreamLicenseSha256,
+    upstreamPomVersion: identity.upstreamPomVersion,
+    upstreamSha: identity.upstreamSha,
+  };
 }
 
 function existingHistory(body) {
@@ -73,11 +86,30 @@ function existingHistory(body) {
 }
 
 function historyEntry(failure) {
-  return `- ${failure.failedAt} | ${failure.stage} | ${failure.workflowRunUrl} | ${singleLine(failure.diagnostic)}`;
+  return `- ${failure.failedAt} | ${failure.stage} | ${failure.workflowRunUrl} | ${sanitizeDiagnostic(failure.diagnostic)}`;
 }
 
-function singleLine(value) {
-  return String(value).replace(/\s+/g, " ").trim();
+function sanitizeDiagnostic(value, { redactions = [] } = {}) {
+  let sanitized = String(value ?? "");
+  for (const redaction of redactions) {
+    if (typeof redaction === "string" && redaction.length > 0) {
+      sanitized = sanitized.replaceAll(redaction, "[redacted]");
+    }
+  }
+  sanitized = sanitized
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(
+      /\b(authorization|password|token|secret|username)\s*[:=]\s*(?:bearer\s+)?\S+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, "https://[redacted]@")
+    .replace(/[`<>]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  const diagnostic = sanitized || "No adapter diagnostic was captured.";
+  return diagnostic.length <= 240
+    ? diagnostic
+    : `${diagnostic.slice(0, 237)}...`;
 }
 
 function successIssueResolution({ issueNumber, identity }) {
@@ -205,6 +237,7 @@ function validPercent(value) {
 
 module.exports = {
   failureIssueUpdate,
+  sanitizeDiagnostic,
   successIssueResolution,
   tokenRotationAction,
   validatePublisherConfig,

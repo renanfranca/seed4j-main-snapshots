@@ -10,6 +10,8 @@ const {
 test("derives the same personal snapshot identity from immutable upstream facts", () => {
   const upstream = {
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   };
@@ -21,6 +23,8 @@ test("derives the same personal snapshot identity from immutable upstream facts"
     artifactId: "seed4j-main-snapshot",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
     version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
@@ -31,6 +35,8 @@ test("derives the same personal snapshot identity from immutable upstream facts"
 test("rejects missing, malformed, or ambiguous upstream identity facts", () => {
   const valid = {
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   };
@@ -39,6 +45,7 @@ test("rejects missing, malformed, or ambiguous upstream identity facts", () => {
     { ...valid, upstreamSha: "4EEBD07BCE14C9A6AC70BACE157FCC616133E950" },
     { ...valid, upstreamCommitTimestamp: "2026-09-07T05:58:00+02:00" },
     { ...valid, upstreamCommitTimestamp: "not-a-time" },
+    { ...valid, upstreamLicenseSha256: "not-a-digest" },
     { ...valid, upstreamPomVersion: "" },
     { ...valid, upstreamPomVersion: "${revision}" },
     { ...valid, upstreamPomVersion: "2.2.1-SNAPSHOT-SNAPSHOT" },
@@ -52,6 +59,8 @@ test("rejects missing, malformed, or ambiguous upstream identity facts", () => {
 test("qualifies only the exact successful official upstream push build and treats every other result as a skip", () => {
   const candidate = {
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   };
@@ -101,6 +110,7 @@ test("retry derives its candidate only from deterministic failure markers and re
   "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
   "groupId": "io.github.renanfranca",
   "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
+  "upstreamLicenseSha256": "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   "upstreamPomVersion": "2.2.1-SNAPSHOT",
   "upstreamSha": "4eebd07bce14c9a6ac70bace157fcc616133e950"
 }
@@ -160,6 +170,8 @@ test("retry derives its candidate only from deterministic failure markers and re
 test("uses public Central state to skip recent snapshots and refresh absent or sixty-day snapshots", () => {
   const identity = deriveSnapshotIdentity({
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   });

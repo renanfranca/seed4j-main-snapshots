@@ -33,6 +33,8 @@ test("applies only personal publication metadata and immutable provenance to an 
     artifactId: "seed4j-main-snapshot",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
     version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
@@ -92,6 +94,7 @@ publisher=renanfranca
 release-channel=unofficial-main-snapshot
 upstream-commit=4eebd07bce14c9a6ac70bace157fcc616133e950
 upstream-commit-timestamp=2026-09-07T05:58:00Z
+upstream-license-sha256=d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e
 upstream-pom-version=2.2.1-SNAPSHOT
 upstream-repository=https://github.com/seed4j/seed4j
 version=2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT
@@ -127,6 +130,8 @@ test("round-trips a qualified identity as one opaque workflow output and rejects
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     groupId: "io.github.renanfranca",
     artifactId: "seed4j-main-snapshot",
   };
@@ -137,6 +142,8 @@ test("round-trips a qualified identity as one opaque workflow output and rejects
     artifactId: "seed4j-main-snapshot",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+    upstreamLicenseSha256:
+      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
     version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",

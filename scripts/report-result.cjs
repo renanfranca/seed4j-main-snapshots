@@ -9,7 +9,9 @@ const PUBLISHER_REPOSITORY = "renanfranca/seed4j-main-snapshots";
 const FAILURE_TITLE = "[publisher] Seed4J main snapshot failure";
 
 async function reportPublisherResult({
+  buildDiagnostic,
   buildResult,
+  deployDiagnostic,
   deployResult,
   encodedIdentity,
   now,
@@ -30,13 +32,20 @@ async function reportPublisherResult({
   if (!["failure", "publish"].includes(outcome)) {
     throw new Error(`Unsupported publisher outcome '${outcome ?? ""}'.`);
   }
-  const identity = decodeIdentity(encodedIdentity);
+  const identity = encodedIdentity
+    ? decodeIdentity(encodedIdentity)
+    : undefined;
   const issue = await openFailureIssue(repository, request);
   if (
     outcome === "publish" &&
     buildResult === "success" &&
     deployResult === "success"
   ) {
+    if (!identity) {
+      throw new Error(
+        "Successful publication reporting requires a qualified identity.",
+      );
+    }
     if (!issue) {
       return Object.freeze({ action: "none", reason: "no-open-failure" });
     }
@@ -71,7 +80,9 @@ async function reportPublisherResult({
     existingBody: issue?.body,
     failure: {
       diagnostic: failureDiagnostic({
+        buildDiagnostic,
         buildResult,
+        deployDiagnostic,
         deployResult,
         outcome,
         reason,
@@ -116,19 +127,23 @@ function failureStage({ buildResult, outcome }) {
 }
 
 function failureDiagnostic({
+  buildDiagnostic,
   buildResult,
+  deployDiagnostic,
   deployResult,
   outcome,
   reason,
   stage,
 }) {
-  const result =
-    stage === "build"
-      ? buildResult
-      : stage === "deploy"
-        ? deployResult
-        : outcome;
-  return `${reason || "publisher job failed"}; ${stage} result '${result ?? "missing"}'`;
+  if (stage === "qualify") {
+    return reason || "Qualification failed before a diagnostic was captured.";
+  }
+  const diagnostic = stage === "build" ? buildDiagnostic : deployDiagnostic;
+  const result = stage === "build" ? buildResult : deployResult;
+  return (
+    diagnostic ||
+    `${stage} job failed with result '${result ?? "missing"}' before an adapter diagnostic was captured.`
+  );
 }
 
 async function openFailureIssue(repository, request) {
@@ -182,7 +197,9 @@ async function githubRequest(url, options = {}) {
 
 async function run() {
   const result = await reportPublisherResult({
+    buildDiagnostic: process.env.BUILD_DIAGNOSTIC,
     buildResult: process.env.BUILD_RESULT,
+    deployDiagnostic: process.env.DEPLOY_DIAGNOSTIC,
     deployResult: process.env.DEPLOY_RESULT,
     encodedIdentity: process.env.PUBLISHER_IDENTITY,
     now: new Date().toISOString().replace(".000Z", "Z"),

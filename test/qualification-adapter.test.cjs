@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { qualifyPublication } = require("../scripts/qualify-candidate.cjs");
+const {
+  qualificationResult,
+  qualifyPublication,
+} = require("../scripts/qualify-candidate.cjs");
 
 const sha = "4eebd07bce14c9a6ac70bace157fcc616133e950";
 const baseConfig = Object.freeze({
@@ -33,6 +36,8 @@ test("qualifies official main head through the exact workflow and public Central
       artifactId: "seed4j-main-snapshot",
       groupId: "io.github.renanfranca",
       upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+      upstreamLicenseSha256:
+        "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
       upstreamPomVersion: "2.2.1-SNAPSHOT",
       upstreamSha: sha,
       version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
@@ -117,6 +122,7 @@ test("retry reads the sole marked failure, verifies official facts and reachabil
   "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
   "groupId": "io.github.renanfranca",
   "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
+  "upstreamLicenseSha256": "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   "upstreamPomVersion": "2.2.1-SNAPSHOT",
   "upstreamSha": "${sha}"
 }
@@ -136,6 +142,11 @@ test("retry reads the sole marked failure, verifies official facts and reachabil
     ],
     [`/repos/seed4j/seed4j/commits/${sha}`, 200, commit()],
     [`/repos/seed4j/seed4j/contents/pom.xml?ref=${sha}`, 200, pomContent()],
+    [
+      `/repos/seed4j/seed4j/contents/LICENSE.txt?ref=${sha}`,
+      200,
+      licenseContent(),
+    ],
     [`/repos/seed4j/seed4j/compare/${sha}...main`, 200, { status: "ahead" }],
     [
       /\/repos\/seed4j\/seed4j\/actions\/workflows\/github-actions.yml\/runs\?/,
@@ -181,10 +192,34 @@ test("a dispatch from any ref other than publisher main skips before network or 
   assert.equal(requests, 0);
 });
 
+test("a failure before upstream identity exists becomes an explicit nonretryable qualification result", async () => {
+  const result = await qualificationResult({
+    config: baseConfig,
+    event: "workflow_dispatch",
+    now: "2026-09-11T12:00:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: async () => ({ body: {}, status: 503 }),
+  });
+
+  assert.deepEqual(result, {
+    outcome: "failure",
+    reason: "official main commit request returned status '503'.",
+  });
+  assert.equal("identity" in result, false);
+  assert.equal("upstreamSha" in result, false);
+});
+
 function officialHeadRequests({ centralStatus, workflowConclusion }) {
   return [
     ["/repos/seed4j/seed4j/commits/main", 200, commit()],
     [`/repos/seed4j/seed4j/contents/pom.xml?ref=${sha}`, 200, pomContent()],
+    [
+      `/repos/seed4j/seed4j/contents/LICENSE.txt?ref=${sha}`,
+      200,
+      licenseContent(),
+    ],
     [
       /\/repos\/seed4j\/seed4j\/actions\/workflows\/github-actions.yml\/runs\?/,
       200,
@@ -203,6 +238,13 @@ function commit() {
 function pomContent() {
   const pom = `<project><parent><version>4.0.6</version></parent><groupId>com.seed4j</groupId><artifactId>seed4j</artifactId><version>2.2.1-SNAPSHOT</version><properties /></project>`;
   return { content: Buffer.from(pom).toString("base64"), encoding: "base64" };
+}
+
+function licenseContent() {
+  return {
+    content: Buffer.from("upstream Apache license\n").toString("base64"),
+    encoding: "base64",
+  };
 }
 
 function workflowRuns(conclusion) {

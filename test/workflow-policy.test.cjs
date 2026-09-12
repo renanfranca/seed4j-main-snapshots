@@ -6,6 +6,13 @@ const { join, resolve } = require("node:path");
 const test = require("node:test");
 
 const repositoryRoot = resolve(__dirname, "..");
+const approvedActions = Object.freeze({
+  "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+  "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  "actions/setup-java": "b6effb05e454b25005698d916606bdc6ffcbf961",
+  "actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+  "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+});
 
 test("pull requests and main pushes run every publisher validation with only pinned read-only actions", () => {
   const workflow = read(".github/workflows/tests.yml");
@@ -22,9 +29,9 @@ test("pull requests and main pushes run every publisher validation with only pin
     /CENTRAL_|environment:|issues: write|contents: write/,
   );
   assert.deepEqual(actions(workflow), [
-    "actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34",
-    "actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e",
-    "actions/setup-java@de7274d780752246b4c7e1e55e87e80049035ac2",
+    approvedAction("actions/checkout"),
+    approvedAction("actions/setup-node"),
+    approvedAction("actions/setup-java"),
   ]);
 });
 
@@ -105,6 +112,7 @@ test("publication keeps untrusted build code outside the main-only Central crede
     job(workflow, "build"),
     /if: needs\.qualify\.outputs\.outcome == 'publish'/,
   );
+  assert.match(job(workflow, "build"), /outputs:[\s\S]*diagnostic:/);
   assert.match(job(workflow, "build"), /repository: seed4j\/seed4j/);
   assert.match(
     job(workflow, "build"),
@@ -132,6 +140,12 @@ test("publication keeps untrusted build code outside the main-only Central crede
   assert.match(job(workflow, "deploy"), /deploy-candidate\.cjs execute/);
   assert.match(
     job(workflow, "deploy"),
+    /PUBLISHER_IDENTITY: \$\{\{ needs\.qualify\.outputs\.identity \}\}/,
+  );
+  assert.match(job(workflow, "deploy"), /--identity "\$PUBLISHER_IDENTITY"/);
+  assert.match(job(workflow, "deploy"), /outputs:[\s\S]*diagnostic:/);
+  assert.match(
+    job(workflow, "deploy"),
     /CENTRAL_USERNAME: \$\{\{ secrets\.CENTRAL_USERNAME \}\}/,
   );
   assert.match(
@@ -145,6 +159,14 @@ test("publication keeps untrusted build code outside the main-only Central crede
 
   assert.match(job(workflow, "report"), /if: always\(\)/);
   assert.match(job(workflow, "report"), /issues: write/);
+  assert.match(
+    job(workflow, "report"),
+    /BUILD_DIAGNOSTIC: \$\{\{ needs\.build\.outputs\.diagnostic \}\}/,
+  );
+  assert.match(
+    job(workflow, "report"),
+    /DEPLOY_DIAGNOSTIC: \$\{\{ needs\.deploy\.outputs\.diagnostic \}\}/,
+  );
   assert.doesNotMatch(job(workflow, "report"), /CENTRAL_|environment:/);
   assert.match(job(workflow, "token-rotation"), /issues: write/);
   assert.match(
@@ -158,15 +180,9 @@ test("publication keeps untrusted build code outside the main-only Central crede
 
   assert.deepEqual(
     [...new Set(actions(workflow))].sort(),
-    [
-      "actions/checkout@3d3c42e7ec0987d4d385822f2d6bdb709d55dc34",
-      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-      "actions/setup-java@de7274d780752246b4c7e1e55e87e80049035ac2",
-      "actions/setup-node@820762e64cced70ee4eb10dc5218ea3b0e3cf89e",
-      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    ].sort(),
+    Object.keys(approvedActions).map(approvedAction).sort(),
   );
-  assert.ok(actions(workflow).every((action) => /@[0-9a-f]{40}$/.test(action)));
+  assertApprovedActions(workflow);
 });
 
 test("dependency updates stay pinned, delayed, and require human review", () => {
@@ -234,6 +250,21 @@ function actions(workflow) {
   return [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gm)].map(
     (match) => match[1],
   );
+}
+
+function approvedAction(repository) {
+  return `${repository}@${approvedActions[repository]}`;
+}
+
+function assertApprovedActions(workflow) {
+  for (const action of actions(workflow)) {
+    const [repository, revision] = action.split("@");
+    assert.equal(
+      revision,
+      approvedActions[repository],
+      `${repository} must use its reviewed immutable commit`,
+    );
+  }
 }
 
 function job(workflow, name) {

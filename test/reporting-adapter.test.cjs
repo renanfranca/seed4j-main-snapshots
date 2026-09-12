@@ -8,6 +8,8 @@ const identity = Object.freeze({
   artifactId: "seed4j-main-snapshot",
   groupId: "io.github.renanfranca",
   upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+  upstreamLicenseSha256:
+    "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
@@ -37,6 +39,8 @@ test("a qualified failure creates the single marked failure issue with determini
   };
 
   const result = await reportPublisherResult({
+    buildDiagnostic:
+      "npm ci failed\nAuthorization: Bearer secret-value\nregistry returned 503",
     buildResult: "failure",
     encodedIdentity: encodeIdentity(identity),
     now: "2026-09-11T10:20:30Z",
@@ -56,6 +60,43 @@ test("a qualified failure creates the single marked failure issue with determini
   assert.deepEqual(calls[1].options.body.assignees, ["renanfranca"]);
   assert.match(calls[1].options.body.body, /failure-state:start/);
   assert.match(calls[1].options.body.body, /Stage: `build`/);
+  assert.match(calls[1].options.body.body, /registry returned 503/);
+  assert.doesNotMatch(calls[1].options.body.body, /snapshot-absent/);
+  assert.doesNotMatch(calls[1].options.body.body, /secret-value/);
+});
+
+test("a pre-identity qualification failure creates a nonretryable issue without invented provenance", async () => {
+  const calls = [];
+  const request = async (url, options = {}) => {
+    calls.push({ options, url });
+    return options.method === "POST"
+      ? { body: { number: 43 }, status: 201 }
+      : { body: [], status: 200 };
+  };
+
+  const result = await reportPublisherResult({
+    now: "2026-09-11T10:20:30Z",
+    outcome: "failure",
+    reason:
+      "Official upstream POM\nresponse contained an invalid token=secret-value and malformed metadata ".repeat(
+        10,
+      ),
+    repository: "renanfranca/seed4j-main-snapshots",
+    request,
+    workflowRunUrl:
+      "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/124",
+  });
+
+  assert.deepEqual(result, { action: "create", issueNumber: 43 });
+  const body = calls[1].options.body.body;
+  assert.match(body, /Stage: `qualify`/);
+  assert.match(body, /Identity and provenance: unavailable/i);
+  assert.match(body, /not retryable/i);
+  assert.doesNotMatch(body, /failure-state:start/);
+  assert.doesNotMatch(body, /secret-value/);
+  const diagnostic = /- Diagnostic: (.*)/.exec(body)[1];
+  assert.ok(diagnostic.length <= 240);
+  assert.doesNotMatch(diagnostic, /[\r\n]/);
 });
 
 test("successful publication comments on and closes the sole open failure issue", async () => {

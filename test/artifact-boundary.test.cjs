@@ -29,11 +29,14 @@ const {
   executeDeployment,
 } = require("../scripts/deploy-candidate.cjs");
 const { notice, provenance } = require("../scripts/prepare-upstream.cjs");
+const { encodeIdentity } = require("../scripts/publisher-policy.cjs");
 
 const identity = Object.freeze({
   artifactId: "seed4j-main-snapshot",
   groupId: "io.github.renanfranca",
   upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+  upstreamLicenseSha256:
+    "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
   version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
@@ -55,16 +58,16 @@ test("manifests exactly the POM, main JAR, and tests JAR with deterministic size
           "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT.pom",
         role: "pom",
         sha256:
-          "2aee408f79653f6ed59e032e84908638b9dc4bb386e587fdee73215de554cccc",
-        size: 654,
+          "4253f45a2de214662ae47adaa263401cd7319b52c91366475a1862e3aa35751d",
+        size: 1973,
       },
       {
         fileName:
           "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT.jar",
         role: "main",
         sha256:
-          "ce663f104742f48f14768209efc92eadb5cfd50a45c366c3d5f44b8faf44a775",
-        size: 8,
+          "d325aa4aded4b3fb14ea93b94790299c855c54a1beae2fcda3c214e8dc0407bb",
+        size: 1261,
       },
       {
         fileName:
@@ -84,6 +87,8 @@ test("manifests exactly the POM, main JAR, and tests JAR with deterministic size
     schemaVersion: 1,
     upstream: {
       commitTimestamp: "2026-09-07T05:58:00Z",
+      licenseSha256:
+        "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
       pomVersion: "2.2.1-SNAPSHOT",
       sha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
     },
@@ -126,7 +131,7 @@ test("a privileged verifier accepts the complete data-only bundle and rejects ta
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
 
-  assert.deepEqual(verifyCandidateBundle(directory), manifest);
+  assert.deepEqual(verifyCandidateBundle(directory, identity), manifest);
 
   const mainJar = join(
     directory,
@@ -134,13 +139,13 @@ test("a privileged verifier accepts the complete data-only bundle and rejects ta
   );
   writeFileSync(mainJar, "tampered-main-jar");
   assert.throws(
-    () => verifyCandidateBundle(directory),
+    () => verifyCandidateBundle(directory, identity),
     /SHA-256 mismatch.*main/,
   );
-  writeFileSync(mainJar, "main-jar");
+  writeFileSync(mainJar, storedZip(packagedMetadata()));
   writeFileSync(join(directory, "unexpected.sh"), "exit 0");
   assert.throws(
-    () => verifyCandidateBundle(directory),
+    () => verifyCandidateBundle(directory, identity),
     /Unexpected bundle files: unexpected\.sh/,
   );
 
@@ -163,11 +168,14 @@ test("the privileged verifier rejects artifact symlinks at the data-only boundar
     `seed4j-main-snapshot-${identity.version}.jar`,
   );
   const externalMainJar = join(directory, "..", `${identity.upstreamSha}.jar`);
-  writeFileSync(externalMainJar, "main-jar");
+  writeFileSync(externalMainJar, storedZip(packagedMetadata()));
   unlinkSync(mainJar);
   symlinkSync(externalMainJar, mainJar);
 
-  assert.throws(() => verifyCandidateBundle(directory), /regular file/i);
+  assert.throws(
+    () => verifyCandidateBundle(directory, identity),
+    /regular file/i,
+  );
 
   rmSync(externalMainJar, { force: true });
   rmSync(directory, { force: true, recursive: true });
@@ -230,7 +238,10 @@ test("rejects manifest fields, coordinates, repositories, names, and classifiers
       `${JSON.stringify(invalidManifest, null, 2)}\n`,
     );
 
-    assert.throws(() => verifyCandidateBundle(directory), /manifest/i);
+    assert.throws(
+      () => verifyCandidateBundle(directory, identity),
+      /manifest|trusted qualified identity/i,
+    );
   }
 
   rmSync(directory, { force: true, recursive: true });
@@ -259,7 +270,10 @@ test("rejects an internally consistent bundle whose published POM does not use t
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
 
-  assert.throws(() => verifyCandidateBundle(directory), /published POM/i);
+  assert.throws(
+    () => verifyCandidateBundle(directory, identity),
+    /published POM/i,
+  );
 
   rmSync(directory, { force: true, recursive: true });
 });
@@ -279,6 +293,7 @@ test("plans only Maven Wrapper deploy-file 3.1.4 with the POM, main JAR, and tes
 
   const plan = buildDeploymentPlan({
     bundleDirectory: directory,
+    encodedIdentity: encodeIdentity(identity),
     settingsPath: "/trusted/settings.xml",
   });
 
@@ -329,6 +344,8 @@ test("dry run verifies the bundle and prints its deployment plan without credent
       "dry-run",
       "--bundle",
       directory,
+      "--identity",
+      encodeIdentity(identity),
       "--settings",
       settingsPath,
     ],
@@ -341,7 +358,11 @@ test("dry run verifies the bundle and prints its deployment plan without credent
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(
     JSON.parse(result.stdout),
-    buildDeploymentPlan({ bundleDirectory: directory, settingsPath }),
+    buildDeploymentPlan({
+      bundleDirectory: directory,
+      encodedIdentity: encodeIdentity(identity),
+      settingsPath,
+    }),
   );
   assert.equal(result.stderr, "");
   assert.equal(existsSync(settingsPath), false);
@@ -378,6 +399,7 @@ exit 0
 
   const result = executeDeployment({
     bundleDirectory: bundle,
+    encodedIdentity: encodeIdentity(identity),
     password: "p<&ssword",
     repositoryDirectory: directory,
     settingsPath,
@@ -406,12 +428,86 @@ exit 0
     () =>
       executeDeployment({
         bundleDirectory: bundle,
+        encodedIdentity: encodeIdentity(identity),
         repositoryDirectory: directory,
         settingsPath,
       }),
     /credentials/i,
   );
   assert.equal(existsSync(settingsPath), false);
+
+  rmSync(directory, { force: true, recursive: true });
+});
+
+test("privileged deployment rejects self-consistent identity, POM, provenance, or legal tampering before credentials have side effects", () => {
+  const directory = mkdtempSync(join(tmpdir(), "seed4j-deploy-boundary-"));
+  const bundle = join(directory, "bundle");
+  const settingsPath = join(directory, "central-settings.xml");
+  const invocationPath = join(directory, "maven-invoked.txt");
+  const wrapper = join(directory, "mvnw");
+  mkdirSync(bundle);
+  writeFileSync(wrapper, `#!/bin/sh\ntouch "${invocationPath}"\nexit 0\n`);
+  chmodSync(wrapper, 0o700);
+
+  const mutations = [
+    {
+      expected: /trusted qualified identity/i,
+      identity: Object.freeze({
+        ...identity,
+        upstreamSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        version: "2.2.1-main.20260907.055800.aaaaaaaaaaaa-SNAPSHOT",
+      }),
+    },
+    {
+      expected: /nonofficial publication metadata/i,
+      pom: trustedCandidatePom(identity).replace(
+        "Unofficial Seed4J main snapshot",
+        "Official Seed4J snapshot",
+      ),
+    },
+    {
+      entries: {
+        ...packagedMetadata(),
+        "META-INF/seed4j-main-snapshot.properties": `${provenance(identity)}tampered=true\n`,
+      },
+      expected: /embedded provenance/i,
+    },
+    {
+      entries: {
+        ...packagedMetadata(),
+        "META-INF/LICENSE-seed4j-main-snapshot.txt": "different license\n",
+      },
+      expected: /embedded legal metadata/i,
+    },
+  ];
+
+  for (const mutation of mutations) {
+    rmSync(bundle, { force: true, recursive: true });
+    mkdirSync(bundle);
+    const bundleIdentity = mutation.identity ?? identity;
+    writeQualifiedBundleFiles({
+      bundle,
+      entries: mutation.entries ?? packagedMetadata(),
+      identity: bundleIdentity,
+      pom: mutation.pom ?? trustedCandidatePom(bundleIdentity),
+    });
+
+    assert.throws(
+      () =>
+        executeDeployment({
+          bundleDirectory: bundle,
+          encodedIdentity: encodeIdentity(identity),
+          password: "secret",
+          repositoryDirectory: directory,
+          settingsPath,
+          stdio: "pipe",
+          username: "publisher",
+        }),
+      mutation.expected,
+    );
+    assert.equal(existsSync(settingsPath), false);
+    assert.equal(existsSync(invocationPath), false);
+  }
 
   rmSync(directory, { force: true, recursive: true });
 });
@@ -424,7 +520,7 @@ test("collects only the three allowed artifacts from a qualified upstream build"
   writeFileSync(join(checkout, "pom.xml"), candidatePom());
   writeFileSync(
     join(target, `${identity.artifactId}-${identity.version}.jar`),
-    "main-jar",
+    storedZip(packagedMetadata()),
   );
   writeFileSync(join(target, "unexpected-output.jar"), "ignored");
   writeFileSync(
@@ -452,7 +548,7 @@ test("collects only the three allowed artifacts from a qualified upstream build"
     `seed4j-main-snapshot-${identity.version}.jar`,
     `seed4j-main-snapshot-${identity.version}.pom`,
   ]);
-  assert.deepEqual(verifyCandidateBundle(bundle), manifest);
+  assert.deepEqual(verifyCandidateBundle(bundle, identity), manifest);
   assert.doesNotMatch(
     readdirNames(bundle).join("\n"),
     /sources|javadoc|ignored/,
@@ -483,7 +579,7 @@ test("collects a build only when its main JAR embeds exact provenance and legal 
     outputDirectory: bundle,
   });
 
-  assert.deepEqual(verifyCandidateBundle(bundle), manifest);
+  assert.deepEqual(verifyCandidateBundle(bundle, identity), manifest);
   rmSync(bundle, { force: true, recursive: true });
   writeFileSync(
     join(target, `${identity.artifactId}-${identity.version}.jar`),
@@ -529,14 +625,34 @@ function packagedMetadata() {
   };
 }
 
+function writeQualifiedBundleFiles({ bundle, entries, identity, pom }) {
+  const prefix = join(bundle, `${identity.artifactId}-${identity.version}`);
+  writeFileSync(`${prefix}.pom`, pom);
+  writeFileSync(`${prefix}.jar`, storedZip(entries));
+  writeFileSync(`${prefix}-tests.jar`, "tests-jar");
+  const manifest = createCandidateManifest({
+    candidateDirectory: bundle,
+    identity,
+  });
+  writeFileSync(
+    join(bundle, "candidate-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+}
+
 function writeCandidateFiles(directory) {
   const prefix = join(directory, `seed4j-main-snapshot-${identity.version}`);
   writeFileSync(`${prefix}.pom`, candidatePom());
-  writeFileSync(`${prefix}.jar`, "main-jar");
+  writeFileSync(`${prefix}.jar`, storedZip(packagedMetadata()));
   writeFileSync(`${prefix}-tests.jar`, "tests-jar");
 }
 
 function candidatePom() {
+  return trustedCandidatePom(identity);
+}
+
+function trustedCandidatePom(candidateIdentity) {
+  const sourceUrl = `https://github.com/seed4j/seed4j/tree/${candidateIdentity.upstreamSha}`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <project>
   <parent>
@@ -544,13 +660,44 @@ function candidatePom() {
     <artifactId>spring-boot-starter-parent</artifactId>
     <version>4.0.6</version>
   </parent>
-  <groupId>${identity.groupId}</groupId>
-  <artifactId>${identity.artifactId}</artifactId>
-  <version>${identity.version}</version>
+  <groupId>${candidateIdentity.groupId}</groupId>
+  <artifactId>${candidateIdentity.artifactId}</artifactId>
+  <version>${candidateIdentity.version}</version>
   <name>Unofficial Seed4J main snapshot</name>
+  <description>An unofficial rebuild of Seed4J main at ${candidateIdentity.upstreamSha}, published by renanfranca for experimental seed4j-cli compatibility testing.</description>
+  <packaging>jar</packaging>
+  <url>${sourceUrl}</url>
+  <licenses>
+    <license>
+      <name>Apache License, version 2.0</name>
+      <url>https://github.com/seed4j/seed4j/blob/${candidateIdentity.upstreamSha}/LICENSE.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <organization>
+    <name>Renan França personal publisher</name>
+    <url>https://github.com/renanfranca</url>
+  </organization>
+  <developers>
+    <developer>
+      <id>renanfranca</id>
+      <name>Renan França</name>
+      <url>https://github.com/renanfranca</url>
+      <roles>
+        <role>unofficial snapshot publisher</role>
+      </roles>
+    </developer>
+  </developers>
+  <scm>
+    <connection>scm:git:https://github.com/seed4j/seed4j.git</connection>
+    <developerConnection>scm:git:https://github.com/seed4j/seed4j.git</developerConnection>
+    <tag>${candidateIdentity.upstreamSha}</tag>
+    <url>${sourceUrl}</url>
+  </scm>
   <distributionManagement>
     <snapshotRepository>
       <id>central-snapshots</id>
+      <name>Central Portal snapshots</name>
       <url>https://central.sonatype.com/repository/maven-snapshots/</url>
     </snapshotRepository>
   </distributionManagement>

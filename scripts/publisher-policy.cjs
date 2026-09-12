@@ -7,11 +7,13 @@ const FAILURE_STATE_END =
 
 function deriveSnapshotIdentity({
   upstreamCommitTimestamp,
+  upstreamLicenseSha256,
   upstreamPomVersion,
   upstreamSha,
 }) {
   requireUpstreamSha(upstreamSha);
   requireUpstreamTimestamp(upstreamCommitTimestamp);
+  requireUpstreamLicenseSha256(upstreamLicenseSha256);
   requireUpstreamPomVersion(upstreamPomVersion);
   const timestamp = new Date(upstreamCommitTimestamp);
   const compactTimestamp = timestamp
@@ -25,6 +27,7 @@ function deriveSnapshotIdentity({
     artifactId: PERSONAL_ARTIFACT_ID,
     groupId: PERSONAL_GROUP_ID,
     upstreamCommitTimestamp,
+    upstreamLicenseSha256,
     upstreamPomVersion,
     upstreamSha,
     version: `${upstreamBase}-main.${compactTimestamp}.${upstreamSha.slice(0, 12)}-SNAPSHOT`,
@@ -60,6 +63,7 @@ function requireDerivedIdentity(identity) {
     "artifactId",
     "groupId",
     "upstreamCommitTimestamp",
+    "upstreamLicenseSha256",
     "upstreamPomVersion",
     "upstreamSha",
     "version",
@@ -124,6 +128,7 @@ function identityFromFailureState(retryIssueBody) {
   const state = failureState(retryIssueBody);
   const identity = deriveSnapshotIdentity({
     upstreamCommitTimestamp: state.upstreamCommitTimestamp,
+    upstreamLicenseSha256: state.upstreamLicenseSha256,
     upstreamPomVersion: state.upstreamPomVersion,
     upstreamSha: state.upstreamSha,
   });
@@ -171,6 +176,7 @@ function failureState(issueBody) {
     "derivedVersion",
     "groupId",
     "upstreamCommitTimestamp",
+    "upstreamLicenseSha256",
     "upstreamPomVersion",
     "upstreamSha",
   ];
@@ -258,6 +264,14 @@ function requireUpstreamTimestamp(upstreamCommitTimestamp) {
   ) {
     throw new Error(
       `Invalid upstream commit timestamp '${upstreamCommitTimestamp}'.`,
+    );
+  }
+}
+
+function requireUpstreamLicenseSha256(upstreamLicenseSha256) {
+  if (!/^[0-9a-f]{64}$/.test(upstreamLicenseSha256 ?? "")) {
+    throw new Error(
+      `Invalid upstream license SHA-256 '${upstreamLicenseSha256 ?? ""}'.`,
     );
   }
 }
