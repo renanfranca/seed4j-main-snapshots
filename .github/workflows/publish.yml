@@ -132,6 +132,14 @@ jobs:
           set -o pipefail
           npm ci 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
 
+      - name: Format personal POM overlay with upstream Prettier
+        id: format_upstream_pom
+        working-directory: upstream
+        run: |
+          printf '%s' 'Format personal POM overlay with upstream Prettier' > "$RUNNER_TEMP/publisher-build-step"
+          set -o pipefail
+          ./node_modules/.bin/prettier --write pom.xml 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
+
       - name: Run applicable upstream lint
         id: upstream_lint
         working-directory: upstream
@@ -173,7 +181,7 @@ jobs:
           WORKFLOW_LATEST_STEP_PATH: ${{ runner.temp }}/publisher-build-step
           WORKFLOW_LOG_PATH: ${{ runner.temp }}/publisher-build.log
           WORKFLOW_STAGE: build
-          WORKFLOW_STEP_OUTCOMES: '[["Checkout trusted publisher scripts","${{ steps.checkout_publisher.outcome }}"],["Checkout exact untrusted upstream source","${{ steps.checkout_upstream.outcome }}"],["Set up Node.js","${{ steps.setup_node.outcome }}"],["Set up Java","${{ steps.setup_java.outcome }}"],["Install trusted publisher dependencies","${{ steps.publisher_dependencies.outcome }}"],["Apply personal publication overlay and provenance","${{ steps.prepare_upstream.outcome }}"],["Install upstream dependencies","${{ steps.upstream_dependencies.outcome }}"],["Run applicable upstream lint","${{ steps.upstream_lint.outcome }}"],["Run complete upstream verification","${{ steps.upstream_verification.outcome }}"],["Collect the exact data-only candidate bundle","${{ steps.collect_candidate.outcome }}"],["Upload data-only candidate bundle","${{ steps.upload_candidate.outcome }}"]]'
+          WORKFLOW_STEP_OUTCOMES: '[["Checkout trusted publisher scripts","${{ steps.checkout_publisher.outcome }}"],["Checkout exact untrusted upstream source","${{ steps.checkout_upstream.outcome }}"],["Set up Node.js","${{ steps.setup_node.outcome }}"],["Set up Java","${{ steps.setup_java.outcome }}"],["Install trusted publisher dependencies","${{ steps.publisher_dependencies.outcome }}"],["Apply personal publication overlay and provenance","${{ steps.prepare_upstream.outcome }}"],["Install upstream dependencies","${{ steps.upstream_dependencies.outcome }}"],["Format personal POM overlay with upstream Prettier","${{ steps.format_upstream_pom.outcome }}"],["Run applicable upstream lint","${{ steps.upstream_lint.outcome }}"],["Run complete upstream verification","${{ steps.upstream_verification.outcome }}"],["Collect the exact data-only candidate bundle","${{ steps.collect_candidate.outcome }}"],["Upload data-only candidate bundle","${{ steps.upload_candidate.outcome }}"]]'
         run: node publisher/scripts/workflow-diagnostic.cjs
 
   deploy:

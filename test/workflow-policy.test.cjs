@@ -80,6 +80,7 @@ test("committed publisher defaults keep schedules inert before the observed pilo
 
 test("publication keeps untrusted build code outside the main-only Central credential boundary", () => {
   const workflow = read(".github/workflows/publish.yml");
+  const build = job(workflow, "build");
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(
@@ -108,23 +109,34 @@ test("publication keeps untrusted build code outside the main-only Central crede
   );
   assert.doesNotMatch(workflow, /outputs\.upstream-sha/);
   assert.doesNotMatch(job(workflow, "qualify"), /CENTRAL_|environment:|write/);
+  assert.match(build, /if: needs\.qualify\.outputs\.outcome == 'publish'/);
+  assert.match(build, /outputs:[\s\S]*diagnostic:/);
+  assert.match(build, /repository: seed4j\/seed4j/);
+  assert.match(build, /ref: \$\{\{ needs\.qualify\.outputs\.upstreamSha \}\}/);
+  assert.match(build, /persist-credentials: false/);
   assert.match(
-    job(workflow, "build"),
-    /if: needs\.qualify\.outputs\.outcome == 'publish'/,
+    build,
+    /Apply personal publication overlay and provenance[\s\S]*Install upstream dependencies[\s\S]*npm ci[\s\S]*Format personal POM overlay with upstream Prettier[\s\S]*Run applicable upstream lint[\s\S]*npm run lint:ci[\s\S]*Run complete upstream verification[\s\S]*\.\/mvnw --batch-mode -ntp clean verify/,
   );
-  assert.match(job(workflow, "build"), /outputs:[\s\S]*diagnostic:/);
-  assert.match(job(workflow, "build"), /repository: seed4j\/seed4j/);
   assert.match(
-    job(workflow, "build"),
-    /ref: \$\{\{ needs\.qualify\.outputs\.upstreamSha \}\}/,
+    build,
+    /- name: Format personal POM overlay with upstream Prettier\n        id: format_upstream_pom\n        working-directory: upstream\n        run: \|\n          printf '%s' 'Format personal POM overlay with upstream Prettier' > "\$RUNNER_TEMP\/publisher-build-step"\n          set -o pipefail\n          \.\/node_modules\/\.bin\/prettier --write pom\.xml 2>&1 \| tee "\$RUNNER_TEMP\/publisher-build\.log"/,
   );
-  assert.match(job(workflow, "build"), /persist-credentials: false/);
   assert.match(
-    job(workflow, "build"),
-    /node-version: 24[\s\S]*java-version: 25[\s\S]*npm ci[\s\S]*npm run lint:ci[\s\S]*\.\/mvnw --batch-mode -ntp clean verify[\s\S]*collect-candidate\.cjs[\s\S]*upload-artifact/,
+    build,
+    /WORKFLOW_STEP_OUTCOMES: .*\["Format personal POM overlay with upstream Prettier","\$\{\{ steps\.format_upstream_pom\.outcome \}\}"\]/,
   );
   assert.doesNotMatch(
-    job(workflow, "build"),
+    build,
+    /\bnpx\b|\bnpm exec\b|prettier --write \.(?:\s|$)|npm run prettier:format/,
+  );
+  assert.doesNotMatch(build, /continue-on-error:/);
+  assert.match(
+    build,
+    /node-version: 24[\s\S]*java-version: 25[\s\S]*collect-candidate\.cjs[\s\S]*upload-artifact/,
+  );
+  assert.doesNotMatch(
+    build,
     /CENTRAL_|environment:|issues: write|contents: write/,
   );
 
