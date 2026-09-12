@@ -16,21 +16,24 @@ async function reportPublisherResult({
   encodedIdentity,
   now,
   outcome,
+  qualifyResult,
   reason,
   repository,
   request,
   workflowRunUrl,
 }) {
-  if (outcome === "skip") {
+  const qualification = reportedQualification({
+    outcome,
+    qualifyResult,
+    reason,
+  });
+  if (qualification.outcome === "skip") {
     return Object.freeze({ action: "none", reason: "expected-skip" });
   }
   if (repository !== PUBLISHER_REPOSITORY) {
     throw new Error(
       `Publisher reporting must run only in '${PUBLISHER_REPOSITORY}'.`,
     );
-  }
-  if (!["failure", "publish"].includes(outcome)) {
-    throw new Error(`Unsupported publisher outcome '${outcome ?? ""}'.`);
   }
   const identity = encodedIdentity
     ? decodeIdentity(encodedIdentity)
@@ -75,7 +78,10 @@ async function reportPublisherResult({
     return Object.freeze({ action: "close", issueNumber: issue.number });
   }
 
-  const stage = failureStage({ buildResult, outcome });
+  const stage = failureStage({
+    buildResult,
+    outcome: qualification.outcome,
+  });
   const result = failureIssueUpdate({
     existingBody: issue?.body,
     failure: {
@@ -84,8 +90,8 @@ async function reportPublisherResult({
         buildResult,
         deployDiagnostic,
         deployResult,
-        outcome,
-        reason,
+        outcome: qualification.outcome,
+        reason: qualification.reason,
         stage,
       }),
       failedAt: now,
@@ -117,6 +123,25 @@ async function reportPublisherResult({
     action: result.action,
     issueNumber: issue?.number ?? response.body?.number,
   });
+}
+
+function reportedQualification({ outcome, qualifyResult, reason }) {
+  if (["failure", "publish"].includes(outcome)) {
+    return Object.freeze({ outcome, reason });
+  }
+  if (outcome === "skip" && (!qualifyResult || qualifyResult === "success")) {
+    return Object.freeze({ outcome, reason });
+  }
+  if (
+    ["success", "failure", "cancelled", "skipped"].includes(qualifyResult) &&
+    (!outcome || outcome === "skip")
+  ) {
+    return Object.freeze({
+      outcome: "failure",
+      reason: `Qualification job ended with result '${qualifyResult}' before candidate outputs were produced.`,
+    });
+  }
+  throw new Error(`Unsupported publisher outcome '${outcome ?? ""}'.`);
 }
 
 function failureStage({ buildResult, outcome }) {
@@ -204,6 +229,7 @@ async function run() {
     encodedIdentity: process.env.PUBLISHER_IDENTITY,
     now: new Date().toISOString().replace(".000Z", "Z"),
     outcome: process.env.PUBLISHER_OUTCOME,
+    qualifyResult: process.env.QUALIFY_RESULT,
     reason: process.env.PUBLISHER_REASON,
     repository: process.env.GITHUB_REPOSITORY,
     request: githubRequest,

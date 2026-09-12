@@ -82,7 +82,21 @@ function existingHistory(body) {
     .slice(start + FAILURE_HISTORY_START.length, end)
     .trim()
     .split("\n")
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(sanitizeHistoryEntry);
+}
+
+function sanitizeHistoryEntry(value) {
+  const [failedAt, stage, workflowRunUrl, ...diagnostic] = value.split(" | ");
+  if (diagnostic.length === 0) {
+    return sanitizeDiagnostic(value);
+  }
+  return [
+    sanitizeDiagnostic(failedAt),
+    sanitizeDiagnostic(stage),
+    sanitizeDiagnostic(workflowRunUrl),
+    sanitizeDiagnostic(diagnostic.join(" | ")),
+  ].join(" | ");
 }
 
 function historyEntry(failure) {
@@ -104,6 +118,9 @@ function sanitizeDiagnostic(value, { redactions = [] } = {}) {
     )
     .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, "https://[redacted]@")
     .replace(/[`<>]/g, "'")
+    .replace(/@/g, "＠")
+    .replace(/\[/g, "［")
+    .replace(/\]/g, "］")
     .replace(/\s+/g, " ")
     .trim();
   const diagnostic = sanitized || "No adapter diagnostic was captured.";

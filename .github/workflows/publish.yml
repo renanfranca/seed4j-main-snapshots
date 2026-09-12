@@ -284,6 +284,7 @@ jobs:
           PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
           PUBLISHER_OUTCOME: ${{ needs.qualify.outputs.outcome }}
           PUBLISHER_REASON: ${{ needs.qualify.outputs.reason }}
+          QUALIFY_RESULT: ${{ needs.qualify.result }}
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/report-result.cjs
 

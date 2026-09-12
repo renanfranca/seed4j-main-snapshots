@@ -99,6 +99,81 @@ test("a pre-identity qualification failure creates a nonretryable issue without 
   assert.doesNotMatch(diagnostic, /[\r\n]/);
 });
 
+test("a qualification job failure without candidate outputs creates a bounded nonretryable issue", async () => {
+  const calls = [];
+  const request = async (url, options = {}) => {
+    calls.push({ options, url });
+    return options.method === "POST"
+      ? { body: { number: 44 }, status: 201 }
+      : { body: [], status: 200 };
+  };
+
+  const result = await reportPublisherResult({
+    now: "2026-09-11T10:20:30Z",
+    qualifyResult: "failure",
+    repository: "renanfranca/seed4j-main-snapshots",
+    request,
+    workflowRunUrl:
+      "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/125",
+  });
+
+  assert.deepEqual(result, { action: "create", issueNumber: 44 });
+  const body = calls[1].options.body.body;
+  assert.match(body, /Stage: `qualify`/);
+  assert.match(body, /qualification job ended with result 'failure'/i);
+  assert.match(body, /Identity and provenance: unavailable/i);
+  assert.match(body, /not retryable/i);
+  assert.doesNotMatch(body, /failure-state:start/);
+  assert.doesNotMatch(body, /Upstream SHA:/);
+  const diagnostic = /- Diagnostic: (.*)/.exec(body)[1];
+  assert.ok(diagnostic.length <= 240);
+  assert.doesNotMatch(diagnostic, /[\r\n]/);
+});
+
+test("untrusted diagnostics cannot mention arbitrary accounts or create Markdown links", async () => {
+  const calls = [];
+  const request = async (url, options = {}) => {
+    calls.push({ options, url });
+    if (!options.method) {
+      return {
+        body: [
+          {
+            body: `## Failure history
+
+<!-- seed4j-main-snapshot-publisher-failure-history:start -->
+- 2026-09-10T10:20:30Z | qualify | https://github.example/run/1 | Notify @legacy-team through [old login](https://attacker.example/old).
+<!-- seed4j-main-snapshot-publisher-failure-history:end -->`,
+            number: 45,
+            title: "[publisher] Seed4J main snapshot failure",
+          },
+        ],
+        status: 200,
+      };
+    }
+    return { body: {}, status: 200 };
+  };
+
+  const result = await reportPublisherResult({
+    now: "2026-09-11T10:20:30Z",
+    outcome: "failure",
+    qualifyResult: "success",
+    reason:
+      "Notify @octocat and @seed4j/security; sign in at [Central login](https://attacker.example/login).",
+    repository: "renanfranca/seed4j-main-snapshots",
+    request,
+    workflowRunUrl:
+      "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/126",
+  });
+
+  assert.deepEqual(result, { action: "update", issueNumber: 45 });
+  const body = calls[1].options.body.body;
+  assert.equal((body.match(/@renanfranca/g) ?? []).length, 1);
+  assert.doesNotMatch(body, /@legacy-team|@octocat|@seed4j\/security/);
+  assert.doesNotMatch(body, /\[[^\]]+\]\(https?:\/\//);
+  assert.match(body, /octocat/);
+  assert.match(body, /Central login/);
+});
+
 test("successful publication comments on and closes the sole open failure issue", async () => {
   const calls = [];
   const request = async (url, options = {}) => {

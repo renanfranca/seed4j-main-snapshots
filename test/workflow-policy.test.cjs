@@ -167,6 +167,10 @@ test("publication keeps untrusted build code outside the main-only Central crede
     job(workflow, "report"),
     /DEPLOY_DIAGNOSTIC: \$\{\{ needs\.deploy\.outputs\.diagnostic \}\}/,
   );
+  assert.match(
+    job(workflow, "report"),
+    /QUALIFY_RESULT: \$\{\{ needs\.qualify\.result \}\}/,
+  );
   assert.doesNotMatch(job(workflow, "report"), /CENTRAL_|environment:/);
   assert.match(job(workflow, "token-rotation"), /issues: write/);
   assert.match(
@@ -219,6 +223,10 @@ test("dependency updates stay pinned, delayed, and require human review", () => 
 
 test("the operator runbook makes every publication and recovery gate explicit", () => {
   const readme = read("README.md");
+  const config = JSON.parse(read("config/publisher.json"));
+  const documentedExpiryKey = /record the token expiry as `([^`]+)`/.exec(
+    readme,
+  )?.[1];
 
   assert.match(readme, /unofficial/i);
   assert.match(readme, /io\.github\.renanfranca:seed4j-main-snapshot/);
@@ -240,6 +248,9 @@ test("the operator runbook makes every publication and recovery gate explicit", 
     readme,
     /qualification and build jobs[^\n]*never receive[^\n]*deployment secrets/i,
   );
+  assert.equal(documentedExpiryKey, "centralTokenExpiresAt");
+  assert.ok(Object.hasOwn(config, documentedExpiryKey));
+  assert.doesNotMatch(readme, /centralTokenExpiresOn/);
 });
 
 function read(path) {

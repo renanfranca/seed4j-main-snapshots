@@ -66,14 +66,14 @@ Before any pilot, the maintainer must:
    `CENTRAL_USERNAME` and `CENTRAL_PASSWORD` as environment secrets;
 4. create the `publisher-failure` and `publisher-token-rotation` labels;
 5. protect `main`, require the `tests` check and pull requests, and disable force pushes and branch deletion; and
-6. record the token expiry as `centralTokenExpiresOn` in `config/publisher.json`.
+6. record the token expiry as `centralTokenExpiresAt` in `config/publisher.json`.
 
 The automation does not create credentials, verify namespaces, change repository/environment protection, purchase a
 Central plan, or create external configuration.
 
 ## Pilot and schedule policy
 
-The repository starts with `pilotCompleted=false`, `scheduleMode=weekly`, `centralTokenExpiresOn=null`, and no quota
+The repository starts with `pilotCompleted=false`, `scheduleMode=weekly`, `centralTokenExpiresAt=null`, and no quota
 review. Scheduled runs therefore stop safely before candidate resolution. The first publication must be a manually
 observed pilot dispatched from `main` with operation `head`; the protected-environment approval is the final human gate.
 
@@ -98,6 +98,11 @@ derived version, the actual latest build or deploy diagnostic sanitized to one b
 one deterministic retry marker. A genuine qualification failure before trusted identity and provenance are complete
 updates the same assigned issue as a distinct nonretryable qualification failure; it names the stage and workflow run
 without inventing a SHA, version, or retry marker.
+
+If checkout, runtime setup, dependency installation, cancellation, or timeout prevents qualification from emitting any
+candidate output, the independently reported qualifier job result creates that same bounded nonretryable qualification
+failure instead of being mistaken for an expected skip. Captured diagnostic text is rendered inert: arbitrary account
+mentions and Markdown links cannot activate, while the issue template retains its explicit `@renanfranca` mention.
 
 Dispatch `retry-last-failed` only after correcting the trusted publisher or external outage. Retry refuses free-form
 SHAs and requires exactly one marked issue, re-fetches and re-derives the official identity, confirms reachability from
