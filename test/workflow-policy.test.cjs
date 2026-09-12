@@ -61,7 +61,7 @@ test("committed publisher defaults keep schedules inert before the observed pilo
   );
 
   assert.deepEqual(config, {
-    centralTokenExpiresAt: null,
+    centralTokenExpiresAt: "2027-03-10",
     pilotCompleted: false,
     quotaReview: null,
     scheduleMode: "weekly",
