@@ -1,6 +1,6 @@
 {
   "centralTokenExpiresAt": "2027-03-10",
-  "pilotCompleted": false,
+  "pilotCompleted": true,
   "quotaReview": null,
   "scheduleMode": "weekly",
   "schemaVersion": 1

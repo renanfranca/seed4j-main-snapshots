@@ -1,9 +1,10 @@
 const assert = require("node:assert/strict");
-const { spawnSync } = require("node:child_process");
-const { mkdtempSync, readFileSync, rmSync } = require("node:fs");
-const { tmpdir } = require("node:os");
-const { join, resolve } = require("node:path");
+const { readFileSync } = require("node:fs");
+const { resolve } = require("node:path");
 const test = require("node:test");
+
+const { qualificationResult } = require("../scripts/qualify-candidate.cjs");
+const { readPublisherConfig } = require("../scripts/publisher-config.cjs");
 
 const repositoryRoot = resolve(__dirname, "..");
 const approvedActions = Object.freeze({
@@ -35,47 +36,55 @@ test("pull requests and main pushes run every publisher validation with only pin
   ]);
 });
 
-test("committed publisher defaults keep schedules inert before the observed pilot", () => {
-  const config = JSON.parse(read("config/publisher.json"));
-  const directory = mkdtempSync(join(tmpdir(), "publisher-config-"));
-  const outputPath = join(directory, "github-output");
-
-  const result = spawnSync(
-    process.execPath,
-    [
-      resolve(repositoryRoot, "scripts/qualify-candidate.cjs"),
-      "--config",
-      resolve(repositoryRoot, "config/publisher.json"),
-    ],
-    {
-      encoding: "utf8",
-      env: {
-        GITHUB_OUTPUT: outputPath,
-        GITHUB_REPOSITORY: "renanfranca/seed4j-main-snapshots",
-        PUBLISHER_EVENT: "schedule",
-        PUBLISHER_OPERATION: "head",
-        PUBLISHER_REF: "refs/heads/main",
-        PUBLISHER_SCHEDULE: "17 6 * * 1",
-      },
-    },
+test("committed publisher policy enables weekly qualification while daily stays inert", async () => {
+  const committedConfig = JSON.parse(read("config/publisher.json"));
+  const config = readPublisherConfig(
+    resolve(repositoryRoot, "config/publisher.json"),
   );
+  let requests = 0;
+  const request = async () => {
+    requests++;
+    return { body: {}, status: 503 };
+  };
 
-  assert.deepEqual(config, {
+  const weekly = await qualificationResult({
+    config,
+    event: "schedule",
+    now: "2026-09-13T03:45:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request,
+    schedule: "17 6 * * 1",
+  });
+  const daily = await qualificationResult({
+    config,
+    event: "schedule",
+    now: "not-a-runtime-timestamp",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request,
+    schedule: "17 6 * * 0,2-6",
+  });
+
+  assert.deepEqual(committedConfig, {
     centralTokenExpiresAt: "2027-03-10",
-    pilotCompleted: false,
+    pilotCompleted: true,
     quotaReview: null,
     scheduleMode: "weekly",
     schemaVersion: 1,
   });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    readFileSync(outputPath, "utf8"),
-    "outcome=skip\nreason=pilot-not-completed\n",
-  );
-  assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "");
-
-  rmSync(directory, { force: true, recursive: true });
+  assert.deepEqual(weekly, {
+    outcome: "failure",
+    reason: "official main commit request returned status '503'.",
+  });
+  assert.deepEqual(daily, {
+    openFailureIssue: false,
+    outcome: "skip",
+    reason: "daily-schedule-not-enabled",
+  });
+  assert.equal(requests, 1);
 });
 
 test("publication keeps untrusted build code outside the main-only Central credential boundary", () => {
