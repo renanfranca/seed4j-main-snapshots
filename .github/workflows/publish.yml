@@ -150,11 +150,10 @@ jobs:
 
       - name: Run complete upstream verification
         id: upstream_verification
-        working-directory: upstream
         run: |
           printf '%s' 'Run complete upstream verification' > "$RUNNER_TEMP/publisher-build-step"
           set -o pipefail
-          ./mvnw --batch-mode -ntp clean verify 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
+          node publisher/scripts/run-upstream-verification.cjs --checkout upstream 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
 
       - name: Collect the exact data-only candidate bundle
         id: collect_candidate

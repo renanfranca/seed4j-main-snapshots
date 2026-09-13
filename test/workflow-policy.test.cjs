@@ -81,6 +81,8 @@ test("committed publisher defaults keep schedules inert before the observed pilo
 test("publication keeps untrusted build code outside the main-only Central credential boundary", () => {
   const workflow = read(".github/workflows/publish.yml");
   const build = job(workflow, "build");
+  const verificationStep = step(build, "Run complete upstream verification");
+  const verificationAdapter = read("scripts/run-upstream-verification.cjs");
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(
@@ -116,7 +118,23 @@ test("publication keeps untrusted build code outside the main-only Central crede
   assert.match(build, /persist-credentials: false/);
   assert.match(
     build,
-    /Apply personal publication overlay and provenance[\s\S]*Install upstream dependencies[\s\S]*npm ci[\s\S]*Format personal POM overlay with upstream Prettier[\s\S]*Run applicable upstream lint[\s\S]*npm run lint:ci[\s\S]*Run complete upstream verification[\s\S]*\.\/mvnw --batch-mode -ntp clean verify/,
+    /Apply personal publication overlay and provenance[\s\S]*Install upstream dependencies[\s\S]*npm ci[\s\S]*Format personal POM overlay with upstream Prettier[\s\S]*Run applicable upstream lint[\s\S]*npm run lint:ci[\s\S]*Run complete upstream verification[\s\S]*node publisher\/scripts\/run-upstream-verification\.cjs --checkout upstream[\s\S]*Collect the exact data-only candidate bundle/,
+  );
+  assert.match(
+    verificationStep,
+    /node publisher\/scripts\/run-upstream-verification\.cjs --checkout upstream 2>&1 \| tee "\$RUNNER_TEMP\/publisher-build\.log"/,
+  );
+  assert.doesNotMatch(
+    verificationStep,
+    /\.\/mvnw|skip|retry|continue-on-error|CENTRAL_|secrets\./i,
+  );
+  assert.match(
+    verificationAdapter,
+    /"--batch-mode",\s*"-ntp",\s*"clean",\s*"verify"/,
+  );
+  assert.doesNotMatch(
+    verificationAdapter,
+    /-Dskip|skipTests|retry|continue-on-error|CENTRAL_|secrets\./i,
   );
   assert.match(
     build,
@@ -296,5 +314,14 @@ function job(workflow, name) {
     "m",
   ).exec(workflow);
   assert.ok(match, `Missing ${name} job`);
+  return match[0];
+}
+
+function step(workflowJob, name) {
+  const match = new RegExp(
+    `^      - name: ${name}\\n([\\s\\S]*?)(?=^      - name: |(?![\\s\\S]))`,
+    "m",
+  ).exec(workflowJob);
+  assert.ok(match, `Missing ${name} step`);
   return match[0];
 }
