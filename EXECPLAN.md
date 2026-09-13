@@ -6,8 +6,8 @@ Execute the first real publication from `renanfranca/seed4j-main-snapshots`, obs
 
 The pilot is complete only when:
 
-- `publish.yml` runs from `main` with `operation=head`;
-- qualification, build, deploy, reporting, and token rotation are green;
+- `publish.yml` runs from reviewed `main` with `operation=head`, and any bounded recovery follows the recorded operation policy;
+- qualification, build, deploy, reporting, and token rotation are green in the conclusive publication run;
 - the build contains exactly one `./mvnw --batch-mode -ntp clean verify`, Cypress passes 7/7, and coverage is approved;
 - the POM, main JAR, and tests JAR resolve from a clean Maven repository and match the manifest;
 - sources and Javadoc remain unavailable;
@@ -32,9 +32,11 @@ Invalid credentials, a namespace or SNAPSHOT publication capability that is not 
 
 The first approved `head` dispatch was run 34734778818 from reviewed publisher `main@c280da29123504855221e93076c77001025c1b2b`. Qualification, token rotation, the complete unprivileged build, candidate collection, artifact upload, and reporting succeeded. The deploy stopped before creating the private Maven settings file or invoking Maven because the trusted verifier compared the Prettier-formatted candidate POM with the pre-format metadata template byte for byte. The only observed difference is Prettier's deterministic wrapping of the long `<description>` element. Issue 3 now records the complete immutable identity, so the authorized correction is on `3-publisher-pilot-recovery` and its single redispatch operation is `retry-last-failed`.
 
+The publisher-only correction passed pull request 9 and merged normally as `ed3b1ad3c18bd35869db903b99866623390d2977`. The single authorized `retry-last-failed` redispatch was run 34735432440 from that reviewed `main`; every required job completed successfully and the candidate became publicly resolvable. No further publication dispatch is authorized or required.
+
 ## Decisions
 
-- Run `head`, not `retry-last-failed`, because the first successful publication must be the observed pilot of the official upstream HEAD qualified at dispatch time.
+- Use `head` for the initial dispatch so the pilot observes the official upstream HEAD qualified at dispatch time. The one recovery used `retry-last-failed` because issue 3 contained the complete immutable identity.
 - After complete public validation, activate weekly mode only. Do not trigger another publication after weekly activation.
 - Permit at most one publisher-only correction through the mandatory pull-request gate and one appropriate redispatch. Choose the redispatch operation from the presence or absence of complete identity in the reporting issue, never from convenience.
 - Treat the manifest produced by qualification as the immutable source for SHA, version, filenames, sizes, and hashes throughout the build, deploy, public-resolution, reporting, and completion checks.
@@ -47,7 +49,7 @@ The first approved `head` dispatch was run 34734778818 from reviewed publisher `
 - A green aggregate run can conceal an unacceptable skipped or duplicated gate. Audit each required job and the complete build log, including the exact Maven invocation count, Cypress result, coverage result, manifest restoration, bundle boundary, and credential boundary.
 - Resolving artifacts from a warm local repository could produce false confidence. Use a newly created empty `maven.repo.local` for every public-resolution check and compare bytes, size, and SHA-256 with the downloaded run bundle and its manifest.
 - A completion change could accidentally alter schedules, credentials, or permissions. Restrict the final branch to the config flag, its policy test, and this ExecPlan, then audit the hosted diff before merge.
-- Token rotation may change the token value as part of the intended workflow while preserving its configured expiry and security boundary. Never print, retrieve, compare, or expose secret values; validate only the job result, secret names, Environment placement, expiry configuration, and unchanged permissions.
+- The token-rotation job is reporting-only for this pilot. Never print, retrieve, compare, or expose secret values; validate its success plus unchanged secret names, update timestamps, Environment placement, expiry configuration, and permissions.
 
 ## Milestones
 
@@ -71,13 +73,33 @@ If the first publication has a technical failure attributable to the publisher, 
 - [x] Live pre-dispatch boundary reconfirmed: clean green publisher main, no active workflow, green official upstream HEAD, candidate absent, issue 3 uniquely open, expected Environment secrets, and main-only deployment policy.
 - [x] First `head` run 34734778818 completed qualification, build, reporting, and token rotation; deploy failed before Maven on the publisher's strict pre-format versus post-format POM comparison.
 - [x] Canonical formatted POM contract corrected on `3-publisher-pilot-recovery`; regression suite and dry-run against run 34734778818's real bundle are green without creating Maven settings.
-- [ ] Recovery correction merged through one green pull request.
-- [ ] Single `retry-last-failed` redispatch succeeds without another build or artifact contract change.
-- [ ] `head` pilot completed and full logs audited.
-- [ ] Public artifacts and absence of sources and Javadoc verified.
-- [ ] Issue 3 closed automatically.
-- [ ] `pilotCompleted=true` merged with green `tests`.
-- [ ] `main` restored and temporary branches removed.
+- [x] Recovery correction merged through green pull request 9 as `ed3b1ad3c18bd35869db903b99866623390d2977`.
+- [x] The single `retry-last-failed` redispatch, run 34735432440, completed every required job successfully without changing the candidate identity or artifact contract.
+- [x] Complete hosted logs audited for the initial `head` and conclusive recovery run.
+- [x] Public POM, main JAR, and tests JAR verified byte for byte; sources and Javadoc are unavailable.
+- [x] Issue 3 received the exact GAV and upstream SHA and closed automatically.
+- [x] This green-gated completion change sets only `pilotCompleted=true`, preserves weekly-only policy, and records the evidence.
+- [x] The protected merge of this completion change is the final transition; restore clean `main` and remove all temporary branches immediately afterward.
+
+## Observed pilot evidence
+
+The immutable candidate is upstream `seed4j/seed4j@4eebd07bce14c9a6ac70bace157fcc616133e950`, committed at `2026-09-07T05:58:00Z`, with upstream POM version `2.2.1-SNAPSHOT` and license SHA-256 `2ce1586d3891a50aa56bb2c2dc1d56d77955d1a06a9f2e573df9599f11d15ed9`. Its published coordinate is `io.github.renanfranca:seed4j-main-snapshot:2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT`.
+
+Conclusive workflow run [34735432440](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34735432440) ran from `main@ed3b1ad3c18bd35869db903b99866623390d2977`. Job IDs 103665906418 (qualification), 103665944486 (build), 103666521923 (deploy), 103666582290 (reporting), and 103665906301 (token-rotation reporting) all concluded `success`. The build log contains exactly one `./mvnw --batch-mode -ntp clean verify` and one `BUILD SUCCESS`; Cypress passed all 7 specs, frontend statements, branches, functions, and lines were each 100%, the Maven coverage gate reported that all checks were met, and generated CSS was 30,867 bytes. Manifest restoration completed before collection, the uploaded bundle contained exactly four files, and the build log contained no Central credential names. The deploy used only the `central-snapshots` Environment, accepted the byte-exact data bundle, invoked Maven Deploy Plugin 3.1.4, and completed with `BUILD SUCCESS` while all secret values remained masked.
+
+The downloaded candidate manifest is 1,257 bytes with SHA-256 `4707be0365e79c4b131d21f2f00712e158c1e4ff506acbba8bbd242fbeb937ed`. Its complete artifact inventory is:
+
+| Role  | Size (bytes) | SHA-256                                                            |
+| ----- | -----------: | ------------------------------------------------------------------ |
+| POM   |       33,975 | `8387dd6354b083acbdc9bc73a991c10e8e6bb2a3c2a1c24ca40063e51746a6a3` |
+| main  |    7,367,462 | `2ca7c22d1c55fcac874b0d068b748e02672c63ad21f21f0dc715e388d9094d23` |
+| tests |      992,396 | `b90d556f2699519a3712cc0d305f58d98b3946c5ac861dbb57fc16bf1599c72c` |
+
+Public Central metadata appeared with snapshot timestamp `20260913.033057`, build number 1, and last-updated value `20260913033057`. Maven Dependency Plugin 3.11.0 resolved the POM, main JAR, and tests JAR separately with `transitive=false` into a newly created empty local repository using `https://central.sonatype.com/repository/maven-snapshots/`. Each resolved file matched the bundle byte for byte, including the sizes and hashes above. Attempts to resolve `sources` and `javadoc` in that same repository both exited nonzero because the classifiers were absent; the public metadata likewise lists only POM, main JAR, and tests JAR.
+
+Reporting posted `Published io.github.renanfranca:seed4j-main-snapshot:2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT from upstream 4eebd07bce14c9a6ac70bace157fcc616133e950; closing the publisher failure.` as `github-actions` and automatically closed issue 3 at `2026-09-13T03:31:23Z`.
+
+Immediately before this completion change, the workflow hashes still matched the pre-pilot baseline, repository workflow permissions remained read-only without pull-request approval permission, the `central-snapshots` Environment still admitted only `main` with no reviewer, and its only secrets remained `CENTRAL_USERNAME` and `CENTRAL_PASSWORD`. Their update timestamps were unchanged from `2026-09-11T15:45:35Z` and `2026-09-11T15:45:51Z`, respectively; no repository-level secret exists. This change preserves `scheduleMode=weekly`, `quotaReview=null`, and `centralTokenExpiresAt=2027-03-10`.
 
 ## Validation
 
@@ -96,6 +118,8 @@ Parse all workflow YAML and run `actionlint` from an official archive whose chec
 
 Observed for the recovery on 2026-09-13: `npm ci`, `npm test` (48/48), `npm run prettier:check`, `./mvnw --version` (Maven 3.9.16 on Java 25), `npm run dry-run`, workflow YAML parsing, checksum-verified `actionlint` 1.7.12, and `habit-hooks` exited zero. The patched privileged dry-run also accepted the exact four-file bundle downloaded from run 34734778818 and did not create a Maven settings file. No upstream `clean verify` was run locally.
 
+Observed for the completion change on 2026-09-13: the same commands exited zero, including `npm test` (48/48), Maven 3.9.16 on Java 25, checksum-verified `actionlint` 1.7.12, and Habit Hooks with no enforced finding. The policy regression first failed with the committed `pilotCompleted=false`, then passed after the single config transition; it proves the weekly cron enters qualification while the daily cron returns `daily-schedule-not-enabled` without a request. No upstream `clean verify` was run locally.
+
 For public resolution, use an empty Maven local repository and Maven Dependency Plugin `3.11.0` with `transitive=false` to resolve separately:
 
 ```text
@@ -104,7 +128,7 @@ io.github.renanfranca:seed4j-main-snapshot:<version>:jar
 io.github.renanfranca:seed4j-main-snapshot:<version>:jar:tests
 ```
 
-Use only `https://central.sonatype.com/repository/maven-snapshots/`. Compare the three resolved files byte for byte and by size and SHA-256 against the candidate bundle and manifest. Resolve `sources` and `javadoc` from a fresh repository and require both operations to fail.
+Use only `https://central.sonatype.com/repository/maven-snapshots/`. Compare the three resolved files byte for byte and by size and SHA-256 against the candidate bundle and manifest. Resolve `sources` and `javadoc` from the same initially empty repository and require both operations to fail.
 
 Final acceptance requires a green pilot workflow linked to the reviewed `main`, three public artifacts identical to the bundle, unavailable sources and Javadoc, automatically closed issue 3, merged `pilotCompleted=true`, weekly eligibility with daily inertness, no exposed secret, no change to Seed4J, seed4j-cli, Central configuration, token metadata, permissions, workflows, or Environment, and a clean publisher checkout on `main` with no temporary branches.
 
