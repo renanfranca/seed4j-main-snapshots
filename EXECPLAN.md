@@ -1,77 +1,80 @@
-# Stabilize upstream headless verification in the publisher
+# Execute and complete the publisher pilot autonomously
 
 ## Purpose and success
 
-Make `renanfranca/seed4j-main-snapshots` run the exact upstream `./mvnw --batch-mode -ntp clean verify` gate reliably without changing Seed4J. Success means the publisher temporarily replaces only the known `test:component:headless` watcher command with the proven no-watcher preview runner, preserves and restores the upstream manifests byte for byte, completes a credential-free rehearsal at the immutable candidate SHA, and merges a reviewed publisher pull request with a green `tests` check.
+Execute the first real publication from `renanfranca/seed4j-main-snapshots`, observe the complete workflow, validate the public artifacts, and enable the weekly schedule without requesting intervention during execution.
 
-This correction stops after its pull request is green and merged. It does not dispatch the publisher, complete the pilot, close the publisher failure issue, publish an artifact, or change Central, schedules, permissions, tests, retries, or credentials.
+The pilot is complete only when:
+
+- `publish.yml` runs from `main` with `operation=head`;
+- qualification, build, deploy, reporting, and token rotation are green;
+- the build contains exactly one `./mvnw --batch-mode -ntp clean verify`, Cypress passes 7/7, and coverage is approved;
+- the POM, main JAR, and tests JAR resolve from a clean Maven repository and match the manifest;
+- sources and Javadoc remain unavailable;
+- issue 3 is closed automatically by reporting;
+- `pilotCompleted=true` is merged through a green pull request;
+- `scheduleMode=weekly`, `quotaReview=null`, the token, permissions, and Environment remain unchanged;
+- the checkout ends clean on `main`, with no temporary branches.
 
 ## Context and limits
 
-The only repository changed by this plan is `renanfranca/seed4j-main-snapshots`. The immutable rehearsal candidate is `seed4j/seed4j@4eebd07bce14c9a6ac70bace157fcc616133e950`. No commit, branch, pull request, tracked edit, or worktree mutation is allowed in Seed4J; all existing Seed4J worktrees and changes must remain preserved.
+The publisher correction for the upstream headless runner is already merged in `main@192c104a683e5c8612c1e152f3dd1344043006de` and passed its hosted tests. The last verified upstream candidate was `seed4j/seed4j@4eebd07bce14c9a6ac70bace157fcc616133e950` with the official upstream CI green. The definitive candidate is the one qualified by the workflow at dispatch time; its manifest makes the upstream SHA and snapshot version immutable for all later checks.
 
-Publisher runs `34718857592` and `34721871206` failed during the single upstream Maven gate after TikUI's Sass watcher attempted `inotify_add_watch` on a transient Vite `node_modules/.vite/deps_temp_*` directory. Diagnostic pull request [#6](https://github.com/renanfranca/seed4j-main-snapshots/pull/6) was closed without merge after hosted run [34727053924](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34727053924) established:
+At approval time, the candidate was absent from Central, issue 3 was open, and both named secrets existed only in the `central-snapshots` Environment. Reconfirm those facts immediately before dispatch instead of assuming they remain true.
 
-- the current watcher reproduced the exact collision in 1/3 samples;
-- the forced Vite watcher reproduced the same collision in 1/3 samples;
-- the no-watcher preview runner passed 3/3 samples, resolved `/style/tikui.css` as a non-empty 30,867-byte response, and passed unchanged Cypress 7/7;
-- the pristine full gate passed with Cypress 7/7 and `BUILD SUCCESS`, confirming that green watcher runs are favorable timing samples rather than evidence against the race.
+Do not change Seed4J, seed4j-cli, Cypress, schedule YAML, permissions, Central, secrets, the token, or Environment protection. Do not publish npm, update the experimental dependency, or evaluate daily mode. The only public operational repository change after the pilot is `pilotCompleted: false` to `true`, which enables Monday at `06:17 UTC`; daily cron invocations must continue to terminate with `daily-schedule-not-enabled`.
 
-Preserve exactly one `./mvnw --batch-mode -ntp clean verify`. Do not add skips, retries, `continue-on-error`, timeout changes, Cypress changes, credentials in the build job, unpinned actions, or publication capabilities. Qualification, personal overlay, upstream dependency installation and lint, candidate collection and upload, deploy, reporting, token rotation, schedules, permissions, and environment boundaries remain unchanged.
+This ExecPlan records the user's one-time approval exception delegating uninterrupted observation and conclusion of this pilot to the executor. The README and its general human-gate rule remain unchanged. The `central-snapshots` Environment remains restricted to `main`; because no required reviewer is configured, the deploy job is not expected to pause for live approval.
 
-The trusted adapter interface is `node scripts/run-upstream-verification.cjs --checkout <directory>`. It must recognize exactly the expected Seed4J package identity and watcher runner, preserve the original `package.json` and `package-lock.json` bytes, replace only `test:component:headless` for the Maven invocation, restore both manifests in `finally`, and fail on an unknown contract, nonzero Maven exit, changed lockfile, or inexact restoration.
+One bounded technical correction cycle is authorized only when the cause is attributable to this publisher. Use `retry-last-failed` when the reporting issue contains the complete candidate identity. Use `head` again only when qualification failed before producing an identity. Never repeat a workflow blindly, use `continue-on-error`, skip or modify tests, or bypass protection.
 
-The temporary runner must retain `concurrently -k -s first`; reuse the TikUI artifacts built earlier in the Maven lifecycle; prepare a coverage-instrumented Vite preview copy; start `tikui-core preview` on the port configured by `tikuiconfig.json`; start `vite preview --port 9000 --strictPort`; wait no more than 30 seconds for a non-empty `GET /style/tikui.css`; and then run the same `cypress run --headless --config-file src/test/webapp/component/cypress-config.ts`. No generated artifact or temporary package change becomes part of the qualified upstream identity or collected candidate.
+Invalid credentials, a namespace or SNAPSHOT publication capability that is not enabled, a Central outage or rejection not caused by the publisher, suspected credential exposure, an unexpected artifact, or an unknown upstream contract are definitive stop conditions. A second publication failure is also definitive. In any stop condition, keep `pilotCompleted=false`, leave the issue open, and keep all publication schedules inert.
 
 ## Decisions
 
-- Apply an ephemeral publisher-owned adapter rather than changing Seed4J. The upstream gate and tests remain authoritative, while the publisher owns recovery from a hosted timing race in its personal publication path. Remove the adapter after an upstream watcher-free contract is available and qualified.
-- Recognize the exact watcher string rather than generically rewriting scripts. This fails closed when upstream changes its package identity, Cypress command, configuration path, or runner topology.
-- Treat any manifest restoration mismatch, lockfile change, leftover TikUI/Vite process, rehearsal failure, policy regression, failed pull-request check, or unexpected diff as a stop condition. Do not weaken the gate or dispatch publication to work around it.
-- End this plan at the merged correction. `pilotCompleted` remains `false`, issue 3 remains open, Central remains untouched, and a later reviewed recovery plan decides whether to retry publication.
-- Preserve the original lockfile across Maven's npm 11.7 install with `npm_config_save=false`. A focused reproduction showed npm 11.7 otherwise removes platform `libc` metadata even without a dependency change; disabling saves retains the lock as resolution input, while the adapter still detects and restores any forced mutation.
-- Build a coverage-instrumented Vite preview copy inside the temporary headless runner before starting the two preview servers. The first immutable rehearsal proved that ordinary production artifacts pass Cypress but yield no component coverage; enabling the existing `vite:istanbul` plugin for this verify-only build restored 100% combined coverage. Maven has already packaged the candidate JAR before the `verify` phase, so this temporary target output cannot enter the collected JAR.
+- Run `head`, not `retry-last-failed`, because the first successful publication must be the observed pilot of the official upstream HEAD qualified at dispatch time.
+- After complete public validation, activate weekly mode only. Do not trigger another publication after weekly activation.
+- Permit at most one publisher-only correction through the mandatory pull-request gate and one appropriate redispatch. Choose the redispatch operation from the presence or absence of complete identity in the reporting issue, never from convenience.
+- Treat the manifest produced by qualification as the immutable source for SHA, version, filenames, sizes, and hashes throughout the build, deploy, public-resolution, reporting, and completion checks.
+- Preserve the general README human gate. This plan alone records the exceptional authorization for autonomous observation and completion of this single pilot.
 
 ## Risks
 
-- Editing an untrusted checkout during verification could contaminate the candidate. Byte-for-byte snapshots, `finally` restoration, post-run equality checks, and collection only after restoration contain this risk.
-- An upstream script change could make a broad replacement unsafe. Exact package and command recognition turns that compatibility change into a hard failure before Maven runs.
-- Preview processes could survive a failed component run. `concurrently -k -s first` remains the process supervisor, and the rehearsal must verify that no TikUI or Vite process remains.
-- The immutable rehearsal is expensive and may expose environment-specific failures. It runs in an isolated checkout without credentials and cannot justify any retry, skip, or test modification.
+- Central snapshot propagation may lag a successful deploy. Poll public metadata for at most 15 minutes at 30-second intervals; this is observation, not a publication retry.
+- A green aggregate run can conceal an unacceptable skipped or duplicated gate. Audit each required job and the complete build log, including the exact Maven invocation count, Cypress result, coverage result, manifest restoration, bundle boundary, and credential boundary.
+- Resolving artifacts from a warm local repository could produce false confidence. Use a newly created empty `maven.repo.local` for every public-resolution check and compare bytes, size, and SHA-256 with the downloaded run bundle and its manifest.
+- A completion change could accidentally alter schedules, credentials, or permissions. Restrict the final branch to the config flag, its policy test, and this ExecPlan, then audit the hosted diff before merge.
+- Token rotation may change the token value as part of the intended workflow while preserving its configured expiry and security boundary. Never print, retrieve, compare, or expose secret values; validate only the job result, secret names, Environment placement, expiry configuration, and unchanged permissions.
 
 ## Milestones
 
-1. Reconcile the durable plan and diagnostic evidence. Replace the obsolete pilot-completion plan, confirm PR 6 is closed without merge and run 34727053924's results, rename the local publisher branch to `stabilize-publisher-headless-verification`, and leave all Seed4J worktrees untouched. Acceptance is a self-contained plan with the new stop conditions and no publisher source change yet.
+1. Materialize and approve this operational plan. Replace the completed watcher-correction `EXECPLAN.md` with this plan on branch `publisher-pilot`, commit exactly `docs(publisher): define complete pilot execution`, push, open a pull request to `main`, await the `tests` check, review the final diff, and merge normally. Run `npm ci`, `npm test`, `npm run prettier:check`, `./mvnw --version`, `npm run dry-run`, YAML parsing, checksum-verified `actionlint`, and `habit-hooks` before the pull request. Acceptance is a green, reviewed plan-only pull request merged to `main`, followed by a clean local `main` and removal of the temporary branch.
 
-2. Implement and behavior-test the adapter. Add `scripts/run-upstream-verification.cjs` and Node tests covering temporary application, exact Cypress/config/coverage retention, successful and failed restoration, unknown upstream rejection, lockfile mutation detection with restoration, and Maven failure propagation. Change only `Run complete upstream verification` in `publish.yml` to invoke it. Update workflow policy tests to require the adapter and continue rejecting skips, retries, `continue-on-error`, build credentials, and unpinned actions. Acceptance is focused and full Node tests passing.
+2. Reconfirm the live boundary and dispatch the publication. Immediately before dispatch, prove a clean worktree, publisher `main` green with no active workflow, upstream HEAD with official CI green, absent Central metadata for the qualified candidate version if already knowable, issue 3 as the single open pilot issue, correct Environment secret names, and an Environment deployment policy restricted to `main`. Then run `gh workflow run publish.yml --repo renanfranca/seed4j-main-snapshots --ref main -f operation=head`, capture the run URL and ID, and observe it with `gh run watch <run-id> --exit-status`. Acceptance is success of `qualify`, `build`, `deploy`, `report`, and `token-rotation` from the reviewed `main` commit.
 
-3. Reconcile documentation and rehearse the immutable candidate. Update `README.md` with the ephemeral, non-identity-changing workaround. In an isolated checkout of `4eebd07bce14c9a6ac70bace157fcc616133e950`, reproduce overlay, dependency installation, POM formatting, lint, adapter, and collection without credentials. Acceptance requires one `clean verify`, `BUILD SUCCESS`, Cypress 7/7, green frontend coverage, no TikUI/Vite process, and byte-exact manifest restoration before collection.
+3. Audit the workflow and validate public publication. Inspect the complete run logs for immutable qualified identity, exactly one `./mvnw --batch-mode -ntp clean verify`, `BUILD SUCCESS`, Cypress 7/7, approved frontend coverage, non-empty CSS, byte-exact manifest restoration, a four-file candidate bundle, and no credentials in the build job. Download `publisher-candidate-<upstream-sha>` immediately into a directory created with `mktemp -d`; require only `candidate-manifest.json`, the POM, main JAR, and tests JAR, and verify identity, sizes, and SHA-256. Poll Central metadata every 30 seconds for no more than 15 minutes. In a separate empty Maven repository, use Maven Dependency Plugin `3.11.0`, `transitive=false`, and only `https://central.sonatype.com/repository/maven-snapshots/` to resolve the POM, main JAR, and tests JAR separately, compare their bytes, sizes, and SHA-256 with the manifest, and require resolution failure for the `sources` and `javadoc` classifiers. Confirm issue 3 received the exact GAV and upstream SHA comment and closed automatically. Acceptance is complete agreement between workflow identity, bundle, public repository, and reporting, with no extra artifact.
 
-4. Complete local validation and review. Run `npm ci`, `npm test`, `npm run prettier:check`, `./mvnw --version`, `npm run dry-run`, YAML parsing, checksum-verified `actionlint`, and `habit-hooks` when available. Audit the diff against every unchanged capability. Acceptance is all applicable checks exiting zero and a scoped publisher-only diff.
+4. Record completion and activate weekly publication. Create `record-publisher-pilot` from the updated clean `main`. Change only `config/publisher.json` to set `pilotCompleted=true`, the policy test to expect the new configuration, weekly eligibility, and daily inertness, and this ExecPlan to record the run, SHA, version, hashes, public checks, issue closure, and final state. Preserve `scheduleMode=weekly`, `quotaReview=null`, `centralTokenExpiresAt=2027-03-10`, workflows, permissions, secrets, and Environment. Run the same local validation as milestone 1, commit exactly `chore(publisher): record successful pilot`, push, open a pull request, await `tests`, review the hosted diff, and merge normally. Then await the `main` build, restore the local checkout to clean `main`, and remove local and remote temporary branches. Acceptance is a green merged completion PR, weekly eligibility with daily inertness, no second publication dispatch, and no remaining temporary branch.
 
-5. Deliver and stop. Commit exactly `fix(publisher): stabilize upstream headless verification` with a body explaining the ephemeral runner, preserved single gate, byte-exact restoration, fail-closed contract, and unchanged publication guarantees. Push, open a publisher pull request, wait for `tests`, inspect the hosted diff, and merge without amend or force-push. Stop with `pilotCompleted=false`, issue 3 open, Central untouched, schedules and permissions unchanged, and Seed4J worktrees preserved.
+If the first publication has a technical failure attributable to the publisher, update this plan at that material boundary, create `3-publisher-pilot-recovery` from current `main`, correct only the observed cause, run the complete local and pull-request validation, merge normally, and perform one redispatch using the operation selected by the Decisions section. If the redispatch fails or any definitive stop condition occurs, end without milestone 4 and record the observed evidence before handoff.
 
 ## Progress
 
-- [x] Repeated publisher failures classified as the same TikUI/Vite watcher race before this correction.
-- [x] Diagnostic PR 6 closed without merge after run 34727053924 proved watcher collision and 3/3 preview success with 30,867-byte CSS and Cypress 7/7.
-- [x] Local publisher branch renamed to `stabilize-publisher-headless-verification` from `main@0ec842cca927463a52c5ac5116db73f82fabfeba`.
-- [x] Durable plan reconciled to a publisher-only correction with new stop conditions.
-- [x] Adapter and behavior tests implemented; the full publisher suite passes 48/48 tests.
-- [x] Workflow policy and README reconciled around the ephemeral, fail-closed contract.
-- [x] First immutable rehearsal stopped after Cypress 7/7 because ordinary preview output left frontend coverage below 100% and npm 11.7 rewrote lockfile platform metadata; no candidate was collected.
-- [x] Focused isolated experiments proved `npm_config_save=false` preserves the lock byte for byte and an instrumented verify-only Vite build makes the unchanged preview/Cypress path satisfy 100% coverage.
-- [x] Fresh immutable candidate rehearsal completed: one `clean verify`, `BUILD SUCCESS`, Cypress 7/7, frontend coverage 100%, byte-exact manifest restoration before collection, zero leftover TikUI/Vite processes, and a four-file candidate bundle.
-- [x] Local validation, YAML/actionlint, Habit Hooks, design review, and final boundary audit completed.
-- [ ] Exact commit created, pull request opened, `tests` green, diff reviewed, and pull request merged.
+- [x] Headless runner correction merged and validated in the publisher.
+- [x] Publisher, upstream, Central, Environment, secrets, issue, and checks inspected before approval.
+- [x] Exceptional authorization, final schedule, and failure policy decided.
+- [x] Operational ExecPlan created on `publisher-pilot` from clean `main@192c104a683e5c8612c1e152f3dd1344043006de`.
+- [ ] New ExecPlan validated and merged before dispatch.
+- [ ] Live pre-dispatch boundary reconfirmed.
+- [ ] `head` pilot completed and full logs audited.
+- [ ] Public artifacts and absence of sources and Javadoc verified.
+- [ ] Issue 3 closed automatically.
+- [ ] `pilotCompleted=true` merged with green `tests`.
+- [ ] `main` restored and temporary branches removed.
 
 ## Validation
 
-Tests must execute the CLI adapter against temporary checkout fixtures and observable fake Maven wrappers. They must confirm the exact temporary runner contains unchanged Cypress invocation and config, invokes the sole full gate, restores original manifest bytes, rejects unfamiliar package contracts before Maven, reports nonzero Maven status, and detects lockfile mutation while still restoring it.
-
-The isolated rehearsal follows build-job order without Central credentials: apply the personal overlay, run upstream `npm ci`, format only the POM, run `npm run lint:ci`, invoke the adapter once, confirm restoration and no relevant process, then collect the candidate. Evidence must show one `clean verify`, `BUILD SUCCESS`, Cypress 7/7, and successful frontend coverage checks.
-
-Run:
+Before each pull request, run:
 
 ```bash
 npm ci
@@ -82,22 +85,26 @@ npm run dry-run
 habit-hooks
 ```
 
-Parse every workflow as YAML and run checksum-verified `actionlint`. Every applicable command must exit 0. The final audit must confirm that only the trusted adapter call changed in the publication workflow; qualification, overlay, lint, collection, manifest, deploy, reporting, token rotation, permissions, schedules, and pinned actions remain intact. It must confirm no skip, retry, `continue-on-error`, Cypress modification, build credential, publisher dispatch, or Seed4J change was introduced.
+Parse all workflow YAML and run `actionlint` from an official archive whose checksum matches its published SHA-256. All applicable commands must exit zero. Do not run the upstream `clean verify` locally again; the pilot run owns the one authoritative complete upstream gate.
 
-Hosted acceptance is a green `tests` check followed by an unchanged final diff and merge. After merge, confirm `pilotCompleted=false` and issue 3 open. Do not run `publish.yml`.
+For public resolution, use an empty Maven local repository and Maven Dependency Plugin `3.11.0` with `transitive=false` to resolve separately:
 
-Observed locally on 2026-09-12: `npm ci`, `npm test` (48/48), `npm run prettier:check`, `./mvnw --version` (Maven 3.9.16 on Java 25), and `npm run dry-run` all exited 0. Both workflows parsed as YAML. The official actionlint 1.7.12 Linux archive passed its published SHA-256 check and actionlint exited 0. Habit Hooks exited 0 and reported that this publisher has no configured sensor files. The scoped design review found no behavior-preserving structural change justified beyond the implemented fail-closed flow.
+```text
+io.github.renanfranca:seed4j-main-snapshot:<version>:pom
+io.github.renanfranca:seed4j-main-snapshot:<version>:jar
+io.github.renanfranca:seed4j-main-snapshot:<version>:jar:tests
+```
 
-The final pre-commit boundary audit found no config, schedule, permission, qualification, overlay, lint, collection, deploy, reporting, token-rotation, pinned-action, Central, or Seed4J change. `pilotCompleted` remained `false`, issue 3 remained open, and the most recent `publish.yml` run remained 34721871206 from before this correction.
+Use only `https://central.sonatype.com/repository/maven-snapshots/`. Compare the three resolved files byte for byte and by size and SHA-256 against the candidate bundle and manifest. Resolve `sources` and `javadoc` from a fresh repository and require both operations to fail.
+
+Final acceptance requires a green pilot workflow linked to the reviewed `main`, three public artifacts identical to the bundle, unavailable sources and Javadoc, automatically closed issue 3, merged `pilotCompleted=true`, weekly eligibility with daily inertness, no exposed secret, no change to Seed4J, seed4j-cli, Central configuration, token metadata, permissions, workflows, or Environment, and a clean publisher checkout on `main` with no temporary branches.
 
 ## Documentation
 
-`README.md` is the operator-facing contract. It must explain that the publisher briefly substitutes the known watcher command only inside verification, restores both manifests before collection, does not change the qualified upstream SHA or collected artifacts, preserves the complete Maven/Cypress/coverage gate, and exists because diagnostic run 34727053924 correlated Sass/inotify failure on Vite's temporary directory with missing CSS.
-
-This `EXECPLAN.md` is the durable evidence and handoff record. Update it only at milestone boundaries, after material risk or direction changes, and immediately before handoff.
+`README.md` remains the canonical general operator contract and is intentionally unchanged. This `EXECPLAN.md` is the durable authorization and evidence record for the one autonomous pilot exception. At milestone boundaries, record concrete run IDs, immutable identity, hashes, validation outcomes, issue state, pull-request commits, and final repository state without recording secret values.
 
 ## Rollout and recovery
 
-The pull request is the only rollout. If `tests` fails or the diff changes unexpectedly, do not merge; diagnose on this branch without amend or force-push. If rehearsal fails, remove only its isolated checkout and stop.
+The rollout has two mandatory reviewed pull requests surrounding one publication dispatch: the plan PR before dispatch and the completion PR after public validation. Neither pull request may be merged with failed or pending `tests`, an unexpected diff, or bypassed protection.
 
-After merge, do not dispatch publication. A later plan may use `retry-last-failed` only after separately rechecking identity and issue state. To recover, revert the publisher merge; do not edit Seed4J or hand-modify upstream manifests. Remove the adapter only when a validated upstream watcher-free runner contract exists.
+The only authorized recovery is one publisher-only correction PR followed by one appropriate redispatch. Do not use skips, retries inside the gate, workflow bypass, secret changes, Environment changes, or upstream edits. If recovery is exhausted or a definitive stop condition occurs, leave `pilotCompleted=false`, keep issue 3 open, preserve inert schedules, restore a clean `main`, and hand off the evidence. After successful completion, do not dispatch again; the next eligible publication is the configured weekly schedule.
