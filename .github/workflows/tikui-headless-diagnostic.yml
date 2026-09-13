@@ -1,0 +1,284 @@
+name: diagnose TikUI headless runner
+
+on:
+  pull_request:
+
+concurrency:
+  group: tikui-headless-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  UPSTREAM_SHA: 4eebd07bce14c9a6ac70bace157fcc616133e950
+
+jobs:
+  pristine-verify:
+    name: pristine upstream clean verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact pristine upstream
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seed4j/seed4j
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+          cache-dependency-path: upstream/pom.xml
+
+      - name: Record hosted runner facts
+        run: |
+          {
+            printf 'timestamp=%s\n' "$(date --utc --iso-8601=seconds)"
+            printf 'image_os=%s\n' "${ImageOS:-unknown}"
+            printf 'image_version=%s\n' "${ImageVersion:-unknown}"
+            uname -a
+            node --version
+            npm --version
+            java -version
+          } 2>&1 | tee "$RUNNER_TEMP/pristine-host-facts.log"
+
+      - name: Install exact upstream dependencies
+        working-directory: upstream
+        run: npm ci
+
+      - name: Run applicable upstream lint
+        working-directory: upstream
+        run: npm run lint:ci
+
+      - name: Run pristine clean verification
+        id: verification
+        working-directory: upstream
+        run: |
+          set +e
+          set -o pipefail
+          ./mvnw --batch-mode -ntp clean verify 2>&1 | tee "$RUNNER_TEMP/pristine-clean-verify.log"
+          status=${PIPESTATUS[0]}
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Classify pristine verification
+        working-directory: upstream
+        env:
+          VERIFY_EXIT_CODE: ${{ steps.verification.outputs.exit_code }}
+        run: |
+          known_pattern="inotify_add_watch on '.*node_modules/.vite/deps_temp_.*' failed: No such file or directory"
+          {
+            printf '### Pristine upstream clean verify\n\n'
+            printf -- '- Upstream: `%s`\n' "$UPSTREAM_SHA"
+            printf -- '- Exit code: `%s`\n' "$VERIFY_EXIT_CODE"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eq "$known_pattern" "$RUNNER_TEMP/pristine-clean-verify.log"; then
+            printf -- '- Observation: known TikUI/Vite watcher collision reproduced without the publisher overlay.\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$VERIFY_EXIT_CODE" = '0' ]; then
+            printf -- '- Observation: green timing sample; this does not disprove the race.\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf -- '- Observation: unexpected failure signature; stop automatic interpretation.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            printf '\n.tikui-cache files after verification:\n'
+            find .tikui-cache -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+            printf '\nVite transient entries after verification:\n'
+            find node_modules/.vite -maxdepth 2 -printf '%P %y\n' 2>/dev/null | sort || true
+          } > "$RUNNER_TEMP/pristine-filesystem-state.log"
+
+      - name: Upload pristine diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pristine-verify-diagnostic
+          path: |
+            ${{ runner.temp }}/pristine-host-facts.log
+            ${{ runner.temp }}/pristine-clean-verify.log
+            ${{ runner.temp }}/pristine-filesystem-state.log
+            upstream/cypress/screenshots
+            upstream/src/test/webapp/component/screenshots
+          if-no-files-found: ignore
+          retention-days: 1
+
+  component-experiment:
+    name: ${{ matrix.mode }} component sample ${{ matrix.sample }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - watch
+          - watch-force
+          - preview
+        sample:
+          - 1
+          - 2
+          - 3
+    steps:
+      - name: Checkout exact pristine upstream
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: seed4j/seed4j
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+
+      - name: Record hosted runner facts
+        env:
+          EXPERIMENT_MODE: ${{ matrix.mode }}
+          EXPERIMENT_SAMPLE: ${{ matrix.sample }}
+        run: |
+          {
+            printf 'mode=%s\n' "$EXPERIMENT_MODE"
+            printf 'sample=%s\n' "$EXPERIMENT_SAMPLE"
+            printf 'timestamp=%s\n' "$(date --utc --iso-8601=seconds)"
+            printf 'image_os=%s\n' "${ImageOS:-unknown}"
+            printf 'image_version=%s\n' "${ImageVersion:-unknown}"
+            uname -a
+            node --version
+            npm --version
+          } 2>&1 | tee "$RUNNER_TEMP/component-host-facts.log"
+
+      - name: Install exact upstream dependencies
+        working-directory: upstream
+        run: npm ci
+
+      - name: Build deterministic frontend inputs
+        working-directory: upstream
+        env:
+          APP_VERSION: 2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT
+        run: npm run build
+
+      - name: Reset transient watcher state
+        working-directory: upstream
+        run: rm -rf .tikui-cache node_modules/.vite
+
+      - name: Run component experiment
+        id: experiment
+        working-directory: upstream
+        env:
+          EXPERIMENT_MODE: ${{ matrix.mode }}
+        run: |
+          probe_css() {
+            for attempt in $(seq 1 240); do
+              timestamp=$(date --utc +'%Y-%m-%dT%H:%M:%S.%3NZ')
+              direct=$(curl --silent --show-error --max-time 1 --output /dev/null --write-out '%{http_code} %{size_download}' http://localhost:9005/tikui.css 2>/dev/null || true)
+              proxied=$(curl --silent --show-error --max-time 1 --output /dev/null --write-out '%{http_code} %{size_download}' http://localhost:9000/style/tikui.css 2>/dev/null || true)
+              printf '%s direct="%s" proxied="%s"\n' "$timestamp" "${direct:-unavailable}" "${proxied:-unavailable}"
+              sleep 0.25
+            done
+          }
+
+          probe_css > "$RUNNER_TEMP/css-readiness.log" &
+          probe_pid=$!
+          trap 'kill "$probe_pid" 2>/dev/null || true; wait "$probe_pid" 2>/dev/null || true' EXIT
+
+          set +e
+          set -o pipefail
+          case "$EXPERIMENT_MODE" in
+            watch)
+              npm run test:component:headless 2>&1 | tee "$RUNNER_TEMP/component-experiment.log"
+              status=${PIPESTATUS[0]}
+              ;;
+            watch-force)
+              ./node_modules/.bin/concurrently -k -s first -n tikui,vite,test \
+                "npm run dev:tikui" \
+                "npm run dev:vite -- --force" \
+                "./node_modules/.bin/wait-on http://localhost:9000 && ./node_modules/.bin/cypress run --headless --config-file src/test/webapp/component/cypress-config.ts" \
+                2>&1 | tee "$RUNNER_TEMP/component-experiment.log"
+              status=${PIPESTATUS[0]}
+              ;;
+            preview)
+              ./node_modules/.bin/concurrently -k -s first -n tikui,vite,test \
+                "./node_modules/.bin/tikui-core preview" \
+                "./node_modules/.bin/vite preview --port 9000 --strictPort" \
+                "./node_modules/.bin/wait-on --timeout 30000 http-get://localhost:9000/style/tikui.css && bytes=\$(curl --fail --silent http://localhost:9000/style/tikui.css | wc -c) && test \"\$bytes\" -gt 0 && printf 'Resolved TikUI CSS bytes: %s\\n' \"\$bytes\" && ./node_modules/.bin/cypress run --headless --config-file src/test/webapp/component/cypress-config.ts" \
+                2>&1 | tee "$RUNNER_TEMP/component-experiment.log"
+              status=${PIPESTATUS[0]}
+              ;;
+            *)
+              printf 'Unsupported experiment mode: %s\n' "$EXPERIMENT_MODE" | tee "$RUNNER_TEMP/component-experiment.log"
+              status=2
+              ;;
+          esac
+          kill "$probe_pid" 2>/dev/null || true
+          wait "$probe_pid" 2>/dev/null || true
+          trap - EXIT
+          printf 'exit_code=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Classify component experiment
+        working-directory: upstream
+        env:
+          EXPERIMENT_EXIT_CODE: ${{ steps.experiment.outputs.exit_code }}
+          EXPERIMENT_MODE: ${{ matrix.mode }}
+          EXPERIMENT_SAMPLE: ${{ matrix.sample }}
+        run: |
+          known_pattern="inotify_add_watch on '.*node_modules/.vite/deps_temp_.*' failed: No such file or directory"
+          known_collision=false
+          if grep -Eq "$known_pattern" "$RUNNER_TEMP/component-experiment.log"; then
+            known_collision=true
+          fi
+          {
+            printf '### `%s` component sample `%s`\n\n' "$EXPERIMENT_MODE" "$EXPERIMENT_SAMPLE"
+            printf -- '- Upstream: `%s`\n' "$UPSTREAM_SHA"
+            printf -- '- Exit code: `%s`\n' "$EXPERIMENT_EXIT_CODE"
+            printf -- '- Known watcher collision: `%s`\n' "$known_collision"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$EXPERIMENT_MODE" = 'preview' ]; then
+            if [ "$EXPERIMENT_EXIT_CODE" != '0' ] || [ "$known_collision" = 'true' ] || ! grep -Eq 'Resolved TikUI CSS bytes: [1-9][0-9]*' "$RUNNER_TEMP/component-experiment.log"; then
+              printf -- '- Observation: preview hypothesis failed or did not prove a non-empty CSS response.\n' >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            printf -- '- Observation: no-watcher preview resolved non-empty CSS and passed unchanged Cypress.\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$known_collision" = 'true' ]; then
+            printf -- '- Observation: known TikUI/Vite watcher collision reproduced.\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$EXPERIMENT_EXIT_CODE" = '0' ]; then
+            printf -- '- Observation: green timing sample; this does not disprove the race.\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf -- '- Observation: unexpected component failure signature; stop automatic interpretation.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            printf '\n.tikui-cache files after experiment:\n'
+            find .tikui-cache -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+            printf '\nVite transient entries after experiment:\n'
+            find node_modules/.vite -maxdepth 2 -printf '%P %y\n' 2>/dev/null | sort || true
+          } > "$RUNNER_TEMP/component-filesystem-state.log"
+
+      - name: Upload component diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: component-${{ matrix.mode }}-${{ matrix.sample }}-diagnostic
+          path: |
+            ${{ runner.temp }}/component-host-facts.log
+            ${{ runner.temp }}/component-experiment.log
+            ${{ runner.temp }}/css-readiness.log
+            ${{ runner.temp }}/component-filesystem-state.log
+            upstream/cypress/screenshots
+            upstream/src/test/webapp/component/screenshots
+          if-no-files-found: ignore
+          retention-days: 1
