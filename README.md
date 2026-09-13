@@ -40,7 +40,25 @@ for republication.
 The qualification and build jobs never receive Central deployment secrets. Qualification has read-only access to the
 official commit, official `github-actions.yml` result, public Central metadata, and the sole marked retry issue. The
 build job checks out the exact qualified SHA without persisted credentials, applies only personal publication metadata
-and provenance, then runs upstream `npm ci`, `npm run lint:ci`, and `./mvnw clean verify`.
+and provenance, then runs upstream `npm ci`, `npm run lint:ci`, and one complete
+`./mvnw --batch-mode -ntp clean verify`.
+
+During that Maven gate only, a trusted publisher adapter recognizes the exact known Seed4J
+`test:component:headless` watcher command and temporarily replaces it with the no-watcher preview arrangement proven
+in diagnostic run 34727053924. It reuses the previously built TikUI files, prepares an instrumented Vite preview copy,
+and serves them with `tikui-core preview` and `vite preview --port 9000 --strictPort`; Cypress starts only after a
+non-empty `GET /style/tikui.css` succeeds within 30 seconds. The Cypress command, component configuration, coverage
+checks, and Maven lifecycle remain unchanged. The candidate JAR is already packaged before this verify-only
+instrumented copy is created, so the copy cannot enter the collected artifact.
+This adaptation exists because the diagnostic run correlated a Sass `inotify_add_watch` failure on Vite's temporary
+`node_modules/.vite/deps_temp_*` directory with missing CSS, while the preview runner passed 3/3 hosted samples.
+
+The adapter snapshots `package.json` and `package-lock.json` byte for byte, changes only the recognized script, and
+restores both manifests even when verification fails. It rejects an unfamiliar upstream contract, lockfile mutation,
+inexact restoration, or a failed Maven gate. Restoration completes before candidate collection, so the adaptation
+does not alter the qualified upstream SHA, become part of the candidate identity, or enter the collected artifacts.
+The Maven child also disables npm metadata saves while continuing to use the upstream lockfile for installation; this
+prevents npm 11.7 from rewriting platform metadata and keeps any actual lockfile mutation detectable.
 
 The deploy job is separate and main-only. It starts from a clean trusted publisher checkout and receives the opaque
 identity directly from qualification. Before creating Maven settings or a deployment plan, it decodes that trusted
