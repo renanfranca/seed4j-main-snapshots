@@ -49,7 +49,7 @@ The pristine watcher reproduction excludes the personal POM overlay as a necessa
 - [x] Added and locally validated the diagnostic workflow.
 - [x] Opened temporary draft PR `#6` and observed all GitHub-hosted experiments in run `34727053924`.
 - [x] Reconciled the watcher, CSS readiness, Cypress, and pristine verification evidence.
-- [ ] Closed the PR without merge.
+- [x] Recorded the conclusion in PR `#6` and closed it without merge; retained the diagnostic branch for the separate upstream-fix plan.
 
 ## Validation
 
