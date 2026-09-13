@@ -30,6 +30,8 @@ One bounded technical correction cycle is authorized only when the cause is attr
 
 Invalid credentials, a namespace or SNAPSHOT publication capability that is not enabled, a Central outage or rejection not caused by the publisher, suspected credential exposure, an unexpected artifact, or an unknown upstream contract are definitive stop conditions. A second publication failure is also definitive. In any stop condition, keep `pilotCompleted=false`, leave the issue open, and keep all publication schedules inert.
 
+The first approved `head` dispatch was run 34734778818 from reviewed publisher `main@c280da29123504855221e93076c77001025c1b2b`. Qualification, token rotation, the complete unprivileged build, candidate collection, artifact upload, and reporting succeeded. The deploy stopped before creating the private Maven settings file or invoking Maven because the trusted verifier compared the Prettier-formatted candidate POM with the pre-format metadata template byte for byte. The only observed difference is Prettier's deterministic wrapping of the long `<description>` element. Issue 3 now records the complete immutable identity, so the authorized correction is on `3-publisher-pilot-recovery` and its single redispatch operation is `retry-last-failed`.
+
 ## Decisions
 
 - Run `head`, not `retry-last-failed`, because the first successful publication must be the observed pilot of the official upstream HEAD qualified at dispatch time.
@@ -37,6 +39,7 @@ Invalid credentials, a namespace or SNAPSHOT publication capability that is not 
 - Permit at most one publisher-only correction through the mandatory pull-request gate and one appropriate redispatch. Choose the redispatch operation from the presence or absence of complete identity in the reporting issue, never from convenience.
 - Treat the manifest produced by qualification as the immutable source for SHA, version, filenames, sizes, and hashes throughout the build, deploy, public-resolution, reporting, and completion checks.
 - Preserve the general README human gate. This plan alone records the exceptional authorization for autonomous observation and completion of this single pilot.
+- Keep privileged POM verification byte-exact by rendering the trusted metadata template in the canonical shape produced by the mandatory upstream Prettier step. Do not introduce general whitespace normalization; the alternative would accept representations outside the single observed publisher path and weaken the fail-closed boundary.
 
 ## Risks
 
@@ -64,8 +67,12 @@ If the first publication has a technical failure attributable to the publisher, 
 - [x] Publisher, upstream, Central, Environment, secrets, issue, and checks inspected before approval.
 - [x] Exceptional authorization, final schedule, and failure policy decided.
 - [x] Operational ExecPlan created on `publisher-pilot` from clean `main@192c104a683e5c8612c1e152f3dd1344043006de`.
-- [ ] New ExecPlan validated and merged before dispatch.
-- [ ] Live pre-dispatch boundary reconfirmed.
+- [x] New ExecPlan validated in pull request 8 and merged as `c280da29123504855221e93076c77001025c1b2b` before dispatch.
+- [x] Live pre-dispatch boundary reconfirmed: clean green publisher main, no active workflow, green official upstream HEAD, candidate absent, issue 3 uniquely open, expected Environment secrets, and main-only deployment policy.
+- [x] First `head` run 34734778818 completed qualification, build, reporting, and token rotation; deploy failed before Maven on the publisher's strict pre-format versus post-format POM comparison.
+- [x] Canonical formatted POM contract corrected on `3-publisher-pilot-recovery`; regression suite and dry-run against run 34734778818's real bundle are green without creating Maven settings.
+- [ ] Recovery correction merged through one green pull request.
+- [ ] Single `retry-last-failed` redispatch succeeds without another build or artifact contract change.
 - [ ] `head` pilot completed and full logs audited.
 - [ ] Public artifacts and absence of sources and Javadoc verified.
 - [ ] Issue 3 closed automatically.
@@ -86,6 +93,8 @@ habit-hooks
 ```
 
 Parse all workflow YAML and run `actionlint` from an official archive whose checksum matches its published SHA-256. All applicable commands must exit zero. Do not run the upstream `clean verify` locally again; the pilot run owns the one authoritative complete upstream gate.
+
+Observed for the recovery on 2026-09-13: `npm ci`, `npm test` (48/48), `npm run prettier:check`, `./mvnw --version` (Maven 3.9.16 on Java 25), `npm run dry-run`, workflow YAML parsing, checksum-verified `actionlint` 1.7.12, and `habit-hooks` exited zero. The patched privileged dry-run also accepted the exact four-file bundle downloaded from run 34734778818 and did not create a Maven settings file. No upstream `clean verify` was run locally.
 
 For public resolution, use an empty Maven local repository and Maven Dependency Plugin `3.11.0` with `transitive=false` to resolve separately:
 

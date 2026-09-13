@@ -58,8 +58,8 @@ test("manifests exactly the POM, main JAR, and tests JAR with deterministic size
           "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT.pom",
         role: "pom",
         sha256:
-          "4253f45a2de214662ae47adaa263401cd7319b52c91366475a1862e3aa35751d",
-        size: 1973,
+          "a9cea8f949debb335322c840e0d1af80b2a83a5dbaaac142e56809f2e6ff5791",
+        size: 1985,
       },
       {
         fileName:
@@ -278,7 +278,7 @@ test("rejects an internally consistent bundle whose published POM does not use t
   rmSync(directory, { force: true, recursive: true });
 });
 
-test("plans only Maven Wrapper deploy-file 3.1.4 with the POM, main JAR, and tests JAR", () => {
+test("plans only Maven Wrapper deploy-file 3.1.4 after mandatory POM formatting", () => {
   const directory = mkdtempSync(join(tmpdir(), "seed4j-candidate-"));
   writeCandidateFiles(directory);
   const manifest = createCandidateManifest({
@@ -664,7 +664,10 @@ function trustedCandidatePom(candidateIdentity) {
   <artifactId>${candidateIdentity.artifactId}</artifactId>
   <version>${candidateIdentity.version}</version>
   <name>Unofficial Seed4J main snapshot</name>
-  <description>An unofficial rebuild of Seed4J main at ${candidateIdentity.upstreamSha}, published by renanfranca for experimental seed4j-cli compatibility testing.</description>
+  <description>
+    An unofficial rebuild of Seed4J main at ${candidateIdentity.upstreamSha}, published by renanfranca for experimental seed4j-cli
+    compatibility testing.
+  </description>
   <packaging>jar</packaging>
   <url>${sourceUrl}</url>
   <licenses>

@@ -59,7 +59,10 @@ function personalPomMetadata(identity) {
   <artifactId>${identity.artifactId}</artifactId>
   <version>${identity.version}</version>
   <name>Unofficial Seed4J main snapshot</name>
-  <description>An unofficial rebuild of Seed4J main at ${identity.upstreamSha}, published by renanfranca for experimental seed4j-cli compatibility testing.</description>
+  <description>
+    An unofficial rebuild of Seed4J main at ${identity.upstreamSha}, published by renanfranca for experimental seed4j-cli
+    compatibility testing.
+  </description>
   <packaging>jar</packaging>
   <url>${sourceUrl}</url>
   <licenses>
