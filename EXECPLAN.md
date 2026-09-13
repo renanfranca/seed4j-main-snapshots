@@ -23,6 +23,18 @@ This work is diagnostic only. Do not modify `.github/workflows/publish.yml`, ups
 - **Forced Vite optimizer:** in three fresh jobs, start the same TikUI watcher while Vite starts with `--force`. This deliberately increases the chance of the already observed `.vite/deps_temp_*` lifecycle collision without changing Cypress behavior or timeouts.
 - **No-watcher preview:** in three fresh jobs, build once, serve TikUI with `tikui-core preview`, serve Vite with `vite preview --strictPort`, wait for `/style/tikui.css`, and run the same Cypress specifications. All three must pass before this arrangement is considered a supported correction hypothesis.
 
+GitHub-hosted [run 34727053924](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34727053924) completed all prototypes on `ubuntu-24.04` image `20260907.300.1`, kernel `6.17.0-1022-azure`, and Node `24.12.0`:
+
+- pristine full verification: exit 0, TikUI CSS compiled, Cypress 7/7, and `BUILD SUCCESS`;
+- current watcher: 1/3 reproduced the exact `inotify_add_watch ... node_modules/.vite/deps_temp_*` failure and Cypress failed, while 2/3 compiled CSS and passed 7/7;
+- forced Vite optimizer: 1/3 reproduced the same failure and Cypress failed, while 2/3 compiled CSS and passed 7/7;
+- no-watcher preview: 3/3 resolved `/style/tikui.css` as a non-empty 30,867-byte response and passed unchanged Cypress 7/7;
+- CSS probes recorded zero successful direct or proxied CSS responses in both collision samples and repeated successful responses in every green watcher and preview sample.
+
+The key collision jobs are [current watcher sample 1](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34727053924/job/103642912698) and [forced Vite sample 1](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34727053924/job/103642912676). The [pristine full verification](https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/34727053924/job/103642912601) is the green full-gate timing sample. All remaining job links and their individual summaries are available from the run page.
+
+The pristine watcher reproduction excludes the personal POM overlay as a necessary cause. The one green pristine full verification is a favorable timing sample, consistent with the mixed focused results and the earlier official/local green runs. The controlled correlation between the watcher exception, absent CSS, and Cypress failure confirms the race mechanism; the three preview successes support the no-watcher runner as the next correction to validate upstream.
+
 ## Milestones
 
 1. Add a temporary pull-request workflow with empty default permissions, exact pinned action revisions, the immutable upstream SHA, bounded diagnostics, and no publication path. Validate its YAML structure and repository formatting locally.
@@ -35,8 +47,9 @@ This work is diagnostic only. Do not modify `.github/workflows/publish.yml`, ups
 - [x] Confirmed the two normative publisher failures have the same TikUI `inotify_add_watch` signature.
 - [x] Created an isolated publisher worktree from `origin/main@0ec842cca927463a52c5ac5116db73f82fabfeba` on branch `tikui-headless-diagnostic`.
 - [x] Added and locally validated the diagnostic workflow.
-- [ ] Opened the temporary draft PR and observed all GitHub-hosted experiments.
-- [ ] Reconciled results and closed the PR without merge.
+- [x] Opened temporary draft PR `#6` and observed all GitHub-hosted experiments in run `34727053924`.
+- [x] Reconciled the watcher, CSS readiness, Cypress, and pristine verification evidence.
+- [ ] Closed the PR without merge.
 
 ## Validation
 
@@ -49,6 +62,8 @@ npm run prettier:check
 ```
 
 Observed before push on 2026-09-12: `npm ci` exited 0, `npm test` exited 0 with 44/44 tests passing, `npm run prettier:check` exited 0, the workflow parsed as YAML, and checksum-verified `actionlint` 1.7.12 exited 0. A capability audit found no Central credentials, secrets, protected environment, issue mutation, schedule, report, token rotation, or deploy reference in the diagnostic workflow.
+
+Observed on GitHub in run `34727053924`: the normal publisher `tests` check and all ten diagnostic jobs completed successfully. Diagnostic job success means the classifier observed either the known race, a permitted green timing sample, or the required green preview result; command-level exits and CSS availability are recorded above. No unexpected signature occurred.
 
 The existing publisher `tests` check must remain green. The diagnostic workflow must expose its command exit status and known-signature detection in the job summary, upload only logs/probes/screenshots, and never upload publication JARs.
 
