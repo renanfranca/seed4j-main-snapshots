@@ -16,8 +16,11 @@ Every candidate is bound to the official `seed4j/seed4j` full commit SHA, that c
 version, and the SHA-256 digest of the official license at that revision. Those facts deterministically produce:
 
 ```text
-<upstream-base>-main.<yyyyMMdd>.<HHmmss>.<first-12-sha>-SNAPSHOT
+<upstream-base>-main.<yyyyMMdd>.<HHmmss>.<40-character-sha>-SNAPSHOT
 ```
+
+The version embeds the complete lowercase upstream commit SHA and is rejected if the derived value exceeds Maven's
+256-character limit. The timestamp precedes the SHA so versions retain chronological ordering.
 
 The data-only candidate contains exactly:
 
@@ -134,8 +137,8 @@ Secrets are never read by token reporting.
 ## Monitoring and recovery
 
 Monitor workflow summaries, the two publisher labels, protected-environment approvals, public snapshot metadata, and
-Central usage after every pilot, retry, refresh, or cadence change. Duplicate marked issues, a manifest rejection,
-unexpected environment access, or a quota projection above 80% is a stop condition.
+Central usage after every pilot, retry, refresh, or cadence change. Duplicate marked issues, a manifest rejection, an
+identity mismatch, unexpected environment access, or a quota projection above 80% is a stop condition.
 
 For a publisher failure, preserve the manifest and issue history, repair the trusted code, and use
 `retry-last-failed`; never hand-edit marker state or substitute an arbitrary ref. For suspected credential exposure,

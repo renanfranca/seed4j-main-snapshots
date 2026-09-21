@@ -1,5 +1,6 @@
 const PERSONAL_ARTIFACT_ID = "seed4j-main-snapshot";
 const PERSONAL_GROUP_ID = "io.github.renanfranca";
+const MAX_MAVEN_VERSION_LENGTH = 256;
 const FAILURE_STATE_START =
   "<!-- seed4j-main-snapshot-publisher-failure-state:start -->";
 const FAILURE_STATE_END =
@@ -22,6 +23,12 @@ function deriveSnapshotIdentity({
     .replace("T", ".")
     .slice(0, 15);
   const upstreamBase = upstreamPomVersion.replace(/-SNAPSHOT$/, "");
+  const version = `${upstreamBase}-main.${compactTimestamp}.${upstreamSha}-SNAPSHOT`;
+  if (version.length > MAX_MAVEN_VERSION_LENGTH) {
+    throw new Error(
+      `Derived Maven version must not exceed ${MAX_MAVEN_VERSION_LENGTH} characters.`,
+    );
+  }
 
   return Object.freeze({
     artifactId: PERSONAL_ARTIFACT_ID,
@@ -30,7 +37,7 @@ function deriveSnapshotIdentity({
     upstreamLicenseSha256,
     upstreamPomVersion,
     upstreamSha,
-    version: `${upstreamBase}-main.${compactTimestamp}.${upstreamSha.slice(0, 12)}-SNAPSHOT`,
+    version,
   });
 }
 

@@ -39,7 +39,8 @@ const identity = Object.freeze({
     "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-  version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+  version:
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
 });
 
 test("manifests exactly the POM, main JAR, and tests JAR with deterministic sizes and hashes", () => {
@@ -55,23 +56,23 @@ test("manifests exactly the POM, main JAR, and tests JAR with deterministic size
     artifacts: [
       {
         fileName:
-          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT.pom",
+          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT.pom",
         role: "pom",
         sha256:
-          "a9cea8f949debb335322c840e0d1af80b2a83a5dbaaac142e56809f2e6ff5791",
-        size: 1985,
+          "7dfb78ef92796886e2af44fe980ba3a449e283a0498fee9192907299b34fbd77",
+        size: 2013,
       },
       {
         fileName:
-          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT.jar",
+          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT.jar",
         role: "main",
         sha256:
-          "d325aa4aded4b3fb14ea93b94790299c855c54a1beae2fcda3c214e8dc0407bb",
-        size: 1261,
+          "a10eac5e9d8cdebb65019efd9ae5d9a01e22b36912ecf600a05b6dda9b5d9354",
+        size: 1289,
       },
       {
         fileName:
-          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT-tests.jar",
+          "seed4j-main-snapshot-2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT-tests.jar",
         role: "tests",
         sha256:
           "1fb7b3066bfca407857efaa2be98a05104e2048a29a5ec997c121791790200b8",
@@ -82,7 +83,8 @@ test("manifests exactly the POM, main JAR, and tests JAR with deterministic size
       artifactId: "seed4j-main-snapshot",
       groupId: "io.github.renanfranca",
       repositoryUrl: "https://central.sonatype.com/repository/maven-snapshots/",
-      version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+      version:
+        "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
     },
     schemaVersion: 1,
     upstream: {
@@ -455,7 +457,8 @@ test("privileged deployment rejects self-consistent identity, POM, provenance, o
       identity: Object.freeze({
         ...identity,
         upstreamSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        version: "2.2.1-main.20260907.055800.aaaaaaaaaaaa-SNAPSHOT",
+        version:
+          "2.2.1-main.20260907.055800.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-SNAPSHOT",
       }),
     },
     {

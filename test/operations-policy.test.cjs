@@ -17,7 +17,8 @@ const identity = Object.freeze({
     "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-  version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+  version:
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
 });
 
 test("creates or updates one marked failure issue and closes it after successful publication", () => {
@@ -62,7 +63,7 @@ test("creates or updates one marked failure issue and closes it after successful
   assert.deepEqual(successIssueResolution({ issueNumber: 42, identity }), {
     action: "close",
     comment:
-      "Published io.github.renanfranca:seed4j-main-snapshot:2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT from upstream 4eebd07bce14c9a6ac70bace157fcc616133e950; closing the publisher failure.",
+      "Published io.github.renanfranca:seed4j-main-snapshot:2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT from upstream 4eebd07bce14c9a6ac70bace157fcc616133e950; closing the publisher failure.",
     issueNumber: 42,
   });
 });

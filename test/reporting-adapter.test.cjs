@@ -12,7 +12,8 @@ const identity = Object.freeze({
     "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
   upstreamPomVersion: "2.2.1-SNAPSHOT",
   upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-  version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+  version:
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
 });
 
 test("expected qualification skips never read or mutate publisher issues", async () => {
