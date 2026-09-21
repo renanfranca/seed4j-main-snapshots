@@ -27,7 +27,8 @@ test("derives the same personal snapshot identity from immutable upstream facts"
       "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-    version: "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+    version:
+      "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
   });
   assert.deepEqual(retryIdentity, firstIdentity);
 });
@@ -54,6 +55,20 @@ test("rejects missing, malformed, or ambiguous upstream identity facts", () => {
   for (const candidate of invalidCandidates) {
     assert.throws(() => deriveSnapshotIdentity(candidate), /upstream/i);
   }
+});
+
+test("rejects a derived Maven version longer than 256 characters", () => {
+  assert.throws(
+    () =>
+      deriveSnapshotIdentity({
+        upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
+        upstreamLicenseSha256:
+          "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
+        upstreamPomVersion: `2.2.1-${"a".repeat(200)}-SNAPSHOT`,
+        upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
+      }),
+    /256 characters/i,
+  );
 });
 
 test("qualifies only the exact successful official upstream push build and treats every other result as a skip", () => {
@@ -107,7 +122,7 @@ test("retry derives its candidate only from deterministic failure markers and re
 \`\`\`json
 {
   "artifactId": "seed4j-main-snapshot",
-  "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+  "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
   "groupId": "io.github.renanfranca",
   "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
   "upstreamLicenseSha256": "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
@@ -134,7 +149,7 @@ test("retry derives its candidate only from deterministic failure markers and re
   assert.equal(result.outcome, "qualified");
   assert.equal(
     result.identity.version,
-    "2.2.1-main.20260907.055800.4eebd07bce14-SNAPSHOT",
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
   );
   assert.throws(
     () =>
