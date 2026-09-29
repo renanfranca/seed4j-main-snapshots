@@ -102,7 +102,12 @@ jobs:
         if: steps.candidate.outputs.outcome == 'skip'
         env:
           REASON: ${{ steps.candidate.outputs.reason }}
-        run: echo "Publisher skipped safely because ${REASON}." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [ "$REASON" = "no-retryable-publication" ]; then
+            printf '%s\n' "No failed publication is eligible for retry. Use operation ‘head’ to recheck the current official main." >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Publisher skipped safely because %s.\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     name: build unprivileged upstream candidate
@@ -354,8 +359,8 @@ jobs:
 
   token-rotation:
     name: report Central token rotation status
-    needs: cycle
-    if: github.event.schedule != '41 * * * *' && (needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed'))
+    needs: [cycle, qualify]
+    if: github.event.schedule != '41 * * * *' && !cancelled() && (needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed')) && !(needs.qualify.outputs.outcome == 'skip' && needs.qualify.outputs.reason == 'no-retryable-publication')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
