@@ -123,7 +123,14 @@ already started remains bound to its qualified, immutable SHA. The exact SHA sti
 
 Missing, running, cancelled, or failed official CI is a recoverable cycle block. A failed run is diagnosed from up to
 five failed jobs, their steps, and bounded log excerpts, with links; the report states when more failed jobs exist. An observed error code is reported as evidence; if logs do not
-prove a cause, the report says the cause is unknown. Temporary network errors, HTTP 5xx, and API rate limits also
+prove a cause, the report says the cause is unknown. Job logs are consumed to the end while retaining only the last
+64 KiB of bytes. The 30-second request timeout also bounds streaming; readers are cancelled and released afterward.
+Interrupted reads explicitly report incomplete analysis of the received tail, and unavailable logs leave the cause
+unknown. Excerpts prioritize recognized error codes, then substantive errors, then generic termination messages,
+choosing the latest occurrence within each priority. For example, a later `Process completed with exit code 1` does
+not replace `ENOSPC: no space left on device`. Log evidence remains sanitized and bounded before publication.
+
+Temporary network errors, HTTP 5xx, and API rate limits also
 schedule another check, no earlier than the service's retry time. The next check is normally about one hour later.
 Invalid upstream data, an expired recorded Central token, and other blocks needing correction close the cycle. An
 already published snapshot inside the 60-day retention window closes it as an eligible skip.
@@ -134,12 +141,35 @@ repeats all criteria and explains why the SHA was published, skipped, or could n
 
 | Criterion               | Status        | Observed                         | Evidence                |
 | ----------------------- | ------------- | -------------------------------- | ----------------------- |
+| Qualification           | Accepted      | complete official provenance     | official commit link    |
 | Official main SHA       | Accepted      | exact 40-character SHA           | official commit link    |
 | Exact-SHA official CI   | Rejected      | failed job, step, observed error | official job link       |
-| Central token           | Not evaluated | CI not approved                  | no token decision       |
+| Central token           | Accepted      | recorded expiry is valid         | publisher configuration |
 | Retention               | Not evaluated | CI not approved                  | no Central lookup       |
 | Publisher build         | Not evaluated | build not started                | publisher workflow link |
 | Deploy/public artifacts | Not evaluated | deploy not started               | publisher workflow link |
+
+Observations accumulate as each qualification stage finishes and are shared by success, retry, and definitive failure
+results. The official SHA is recorded immediately after validation; a full publication identity is available only
+after all provenance facts are obtained. A later failure preserves earlier approvals, rejects the blocking criterion
+with its observed error and evidence, and leaves unreached stages `Not evaluated`.
+
+For example, if Central returns HTTP 503 after provenance, exact-SHA CI, and token checks pass:
+
+| Criterion               | Status        | Observed                                                | Evidence                   |
+| ----------------------- | ------------- | ------------------------------------------------------- | -------------------------- |
+| Qualification           | Accepted      | complete official provenance                            | official commit link       |
+| Official main SHA       | Accepted      | exact 40-character SHA                                  | official commit link       |
+| Exact-SHA official CI   | Accepted      | completed successfully for exact SHA                    | official workflow run link |
+| Central token           | Accepted      | recorded expiry is valid                                | publisher configuration    |
+| Retention               | Rejected      | Central HTTP 503; retention eligibility remains unknown | public metadata URL        |
+| Publisher build         | Not evaluated | build not started                                       | publisher workflow link    |
+| Deploy/public artifacts | Not evaluated | deploy not started                                      | publisher workflow link    |
+
+The Central query failure rejects the evaluation, without claiming that the snapshot fails the retention policy.
+HTTP 503 and rate limits retain these observations and schedule a retry respecting the service deadline. Invalid
+Central metadata retains the same approvals but ends qualification definitively. An expired token leaves official
+CI and retention unassessed because cycle qualification checks the token before querying official CI.
 
 The issue body keeps the latest attempt and bounded cycle state; comments preserve the full attempt history. A comment
 mentions `@renanfranca` only when the SHA, blocker, or final outcome changes. The final issue is closed. A publisher build failure closes the cycle and creates or updates the separate

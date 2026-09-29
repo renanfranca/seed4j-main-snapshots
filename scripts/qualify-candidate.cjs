@@ -51,17 +51,74 @@ async function qualifyPublication({
   }
 
   let resolved;
+  let upstreamSha;
+  let criteria = unevaluatedCriteria();
+  let pending = {
+    name: "Qualification",
+    evidence: "Official candidate provenance",
+  };
   try {
-    resolved =
-      operation === "head"
-        ? await resolveHeadCandidate(request)
-        : await resolveRetryCandidate({ publisherRepository, request });
+    if (operation === "head") {
+      pending = {
+        name: "Official main SHA",
+        evidence: "https://github.com/seed4j/seed4j/commits/main",
+      };
+      const commitResponse = await request(
+        `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/commits/main`,
+      );
+      requireStatus(commitResponse, 200, "official main commit");
+      if (!/^[0-9a-f]{40}$/.test(commitResponse.body?.sha ?? ""))
+        throw new Error("Invalid official main SHA.");
+      upstreamSha = commitResponse.body.sha;
+      criteria = observeCriterion(
+        criteria,
+        pending.name,
+        "Accepted",
+        upstreamSha,
+        `https://github.com/seed4j/seed4j/commit/${upstreamSha}`,
+      );
+      pending = {
+        name: "Qualification",
+        evidence: `https://github.com/seed4j/seed4j/commit/${upstreamSha}`,
+      };
+      resolved = await resolveHeadCandidate(commitResponse, request);
+    } else {
+      resolved = await resolveRetryCandidate({ publisherRepository, request });
+    }
+    const commitUrl = `https://github.com/seed4j/seed4j/commit/${resolved.identity.upstreamSha}`;
+    criteria = observeCriterion(
+      criteria,
+      "Qualification",
+      "Accepted",
+      "Official candidate identity resolved",
+      commitUrl,
+    );
+    criteria = observeCriterion(
+      criteria,
+      "Official main SHA",
+      "Accepted",
+      resolved.identity.upstreamSha,
+      commitUrl,
+    );
     if (cycleIssueNumber) {
+      pending = { name: "Central token", evidence: "config/publisher.json" };
       requireUsableRecordedToken(
         validatedConfig.centralTokenExpiresOn,
         canonicalPublisherTimestamp(now),
       );
+      criteria = observeCriterion(
+        criteria,
+        pending.name,
+        "Accepted",
+        "Recorded expiry is valid",
+        pending.evidence,
+      );
     }
+    pending = {
+      name: "Exact-SHA official CI",
+      evidence:
+        "https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml",
+    };
     const upstreamCheck = await officialWorkflowCheck(
       resolved.identity.upstreamSha,
       request,
@@ -80,20 +137,47 @@ async function qualifyPublication({
           upstreamCheck,
           now,
           request,
+          criteria,
         );
       }
       return qualification;
     }
+    criteria = observeCriterion(
+      criteria,
+      pending.name,
+      "Accepted",
+      "Completed successfully for exact SHA",
+      upstreamCheck?.url ?? pending.evidence,
+    );
+    pending = { name: "Central token", evidence: "config/publisher.json" };
     const publisherTimestamp = canonicalPublisherTimestamp(now);
     requireUsableRecordedToken(
       validatedConfig.centralTokenExpiresOn,
       publisherTimestamp,
     );
+    criteria = observeCriterion(
+      criteria,
+      pending.name,
+      "Accepted",
+      "Recorded expiry is valid",
+      pending.evidence,
+    );
+    pending = {
+      name: "Retention",
+      evidence: centralMetadataUrl(resolved.identity),
+    };
     const retention = retentionDecision({
       centralMetadata: await centralMetadata(resolved.identity, request),
       identity: resolved.identity,
       now: publisherTimestamp,
     });
+    criteria = observeCriterion(
+      criteria,
+      pending.name,
+      retention.outcome === "publish" ? "Accepted" : "Rejected",
+      retention.reason,
+      pending.evidence,
+    );
     return Object.freeze({
       ...(retention.outcome === "publish"
         ? { identity: resolved.identity }
@@ -102,11 +186,7 @@ async function qualifyPublication({
       upstreamSha: resolved.identity.upstreamSha,
       ...(cycleIssueNumber
         ? {
-            assessment: cycleAssessment(
-              resolved.identity,
-              upstreamCheck,
-              retention,
-            ),
+            assessment: { criteria },
           }
         : {}),
     });
@@ -114,6 +194,16 @@ async function qualifyPublication({
     if (resolved?.identity) {
       error.identity = resolved.identity;
     }
+    error.upstreamSha = upstreamSha ?? resolved?.identity.upstreamSha;
+    error.assessment = {
+      criteria: observeCriterion(
+        criteria,
+        pending.name,
+        "Rejected",
+        `${sanitizeExternalText(error.message)}${pending.name === "Retention" ? "; retention eligibility remains unknown" : ""}`,
+        pending.evidence,
+      ),
+    };
     throw error;
   }
 }
@@ -122,67 +212,60 @@ async function qualificationResult(invocation) {
   try {
     return await qualifyPublication(invocation);
   } catch (error) {
-    if (invocation.cycleIssueNumber && retryableExternalError(error)) {
-      return Object.freeze({
-        outcome: "retry",
-        reason: sanitizeDiagnostic(error.message),
-        ...(error.identity ? { upstreamSha: error.identity.upstreamSha } : {}),
-        assessment: {
-          criteria: [
-            {
-              name: "Qualification",
-              status: "Rejected",
-              observed: sanitizeDiagnostic(error.message),
-              evidence: "External request failed",
-            },
-          ],
-          nextCheck: nextCheck(
-            invocation.now,
-            error.retryAt,
-            error.retryDelayMs,
-          ),
-        },
-      });
-    }
+    const retry = invocation.cycleIssueNumber && retryableExternalError(error);
+    const assessment = error.assessment ?? {
+      criteria: observeCriterion(
+        unevaluatedCriteria(),
+        "Qualification",
+        "Rejected",
+        sanitizeExternalText(error.message),
+        "Publisher qualification run",
+      ),
+    };
     return Object.freeze({
-      ...(error.identity ? { identity: error.identity } : {}),
-      outcome: "failure",
+      ...(!retry && error.identity ? { identity: error.identity } : {}),
+      outcome: retry ? "retry" : "failure",
       reason: sanitizeDiagnostic(error.message),
-      ...(error.identity ? { upstreamSha: error.identity.upstreamSha } : {}),
+      ...(error.upstreamSha ? { upstreamSha: error.upstreamSha } : {}),
       ...(invocation.cycleIssueNumber
         ? {
             assessment: {
-              criteria: [
-                {
-                  name: "Official main SHA",
-                  status: error.identity ? "Accepted" : "Not evaluated",
-                  observed: error.identity?.upstreamSha ?? "Unavailable",
-                  evidence: error.identity
-                    ? `https://github.com/seed4j/seed4j/commit/${error.identity.upstreamSha}`
-                    : "Official main could not be resolved",
-                },
-                {
-                  name: "Qualification",
-                  status: "Rejected",
-                  observed: sanitizeDiagnostic(error.message),
-                  evidence: "Publisher qualification run",
-                },
-                ...(/Central token/.test(error.message)
-                  ? [
-                      {
-                        name: "Central token",
-                        status: "Rejected",
-                        observed: sanitizeDiagnostic(error.message),
-                        evidence: "config/publisher.json",
-                      },
-                    ]
-                  : []),
-              ],
+              ...assessment,
+              ...(retry
+                ? {
+                    nextCheck: nextCheck(
+                      invocation.now,
+                      error.retryAt,
+                      error.retryDelayMs,
+                    ),
+                  }
+                : {}),
             },
           }
         : {}),
     });
   }
+}
+
+function unevaluatedCriteria() {
+  return [
+    "Qualification",
+    "Official main SHA",
+    "Exact-SHA official CI",
+    "Central token",
+    "Retention",
+  ].map((name) => ({
+    name,
+    status: "Not evaluated",
+    observed: "Not reached",
+    evidence: "No evaluation performed",
+  }));
+}
+
+function observeCriterion(criteria, name, status, observed, evidence) {
+  return criteria.map((criterion) =>
+    criterion.name === name ? { name, status, observed, evidence } : criterion,
+  );
 }
 
 function requireInvocation({
@@ -232,11 +315,7 @@ function scheduledPublicationDecision({ config, event, schedule }) {
   return undefined;
 }
 
-async function resolveHeadCandidate(request) {
-  const commitResponse = await request(
-    `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/commits/main`,
-  );
-  requireStatus(commitResponse, 200, "official main commit");
+async function resolveHeadCandidate(commitResponse, request) {
   const upstreamSha = commitResponse.body?.sha;
   const upstreamCommitTimestamp = commitResponse.body?.commit?.committer?.date;
   const upstreamPomVersion = await officialPomVersion(upstreamSha, request);
@@ -411,10 +490,13 @@ function requireUsableRecordedToken(recordedExpiry, now) {
   }
 }
 
-async function centralMetadata(identity, request) {
+function centralMetadataUrl(identity) {
   const groupPath = identity.groupId.replaceAll(".", "/");
-  const url = `${CENTRAL_ROOT}/${groupPath}/${identity.artifactId}/${identity.version}/maven-metadata.xml`;
-  const response = await request(url);
+  return `${CENTRAL_ROOT}/${groupPath}/${identity.artifactId}/${identity.version}/maven-metadata.xml`;
+}
+
+async function centralMetadata(identity, request) {
+  const response = await request(centralMetadataUrl(identity));
   if (response.status === 404) {
     return { status: 404 };
   }
@@ -465,7 +547,7 @@ function nextCheck(now, retryAt, retryDelayMs = 0) {
     .replace(".000Z", "Z");
 }
 
-async function cycleRetryResult(identity, check, now, request) {
+async function cycleRetryResult(identity, check, now, request, criteria) {
   const state = !check
     ? "Missing official run"
     : check.status !== "completed"
@@ -483,41 +565,15 @@ async function cycleRetryResult(identity, check, now, request) {
     reason: observed,
     upstreamSha: identity.upstreamSha,
     assessment: {
-      criteria: [
-        {
-          name: "Qualification",
-          status: "Accepted",
-          observed: "Official candidate identity resolved",
-          evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
-        },
-        {
-          name: "Official main SHA",
-          status: "Accepted",
-          observed: identity.upstreamSha,
-          evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
-        },
-        {
-          name: "Exact-SHA official CI",
-          status: "Rejected",
-          observed: sanitizeExternalText(observed),
-          evidence:
-            diagnostic?.url ??
-            check?.url ??
-            `https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml`,
-        },
-        {
-          name: "Central token",
-          status: "Accepted",
-          observed: "Recorded expiry is valid",
-          evidence: "config/publisher.json",
-        },
-        {
-          name: "Retention",
-          status: "Not evaluated",
-          observed: "CI not approved",
-          evidence: "No Central lookup",
-        },
-      ],
+      criteria: observeCriterion(
+        criteria,
+        "Exact-SHA official CI",
+        "Rejected",
+        sanitizeExternalText(observed),
+        diagnostic?.url ??
+          check?.url ??
+          "https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml",
+      ),
       nextCheck: nextCheck(now),
       ...(diagnostic?.diagnostics
         ? { diagnostics: diagnostic.diagnostics }
@@ -554,8 +610,11 @@ async function officialFailureEvidence(check, request) {
           const logs = await request(
             `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/actions/jobs/${job.id}/logs`,
           );
-          if (logs.status === 200 && typeof logs.body === "string")
-            excerpt = relevantLogExcerpt(logs.body);
+          if (logs.status === 200 && typeof logs.body === "string") {
+            excerpt = `${logs.logReadComplete === false ? "Incomplete log read; analysis limited to received tail; " : ""}${relevantLogExcerpt(logs.body)}`;
+          } else {
+            excerpt = "cause unknown; job logs unavailable";
+          }
         } catch (_) {
           excerpt = "cause unknown; job logs unavailable";
         }
@@ -584,15 +643,18 @@ async function officialFailureEvidence(check, request) {
 }
 
 function relevantLogExcerpt(log) {
-  const relevant = String(log)
-    .slice(-64 * 1024)
-    .split(/\r?\n/)
-    .filter((line) =>
-      /\b(error|failed|ENOSPC|EACCES|ENOENT|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/i.test(
-        line,
-      ),
-    );
-  const line = relevant.at(-1);
+  const lines = String(log).split(/\r?\n/);
+  const codes = /\b(ENOSPC|EACCES|ENOENT|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/;
+  const generic =
+    /process completed with exit code|command .*exited with (?:code|status)|process failed without a diagnostic code/i;
+  const line =
+    lines.findLast((value) => codes.test(value)) ??
+    lines.findLast(
+      (value) =>
+        /\b(error|failed|failure|fatal|exception)\b/i.test(value) &&
+        !generic.test(value),
+    ) ??
+    lines.findLast((value) => generic.test(value));
   if (!line) return "cause unknown; no error line found";
   const code = /\b(ENOSPC|EACCES|ENOENT|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/.exec(
     line,
@@ -610,45 +672,6 @@ function relevantLogExcerpt(log) {
 
 function sanitizeExternalText(value) {
   return sanitizeDiagnostic(value).replace(/https?:\/\//gi, "https[:]//");
-}
-
-function cycleAssessment(identity, check, retention) {
-  return {
-    criteria: [
-      {
-        name: "Qualification",
-        status: "Accepted",
-        observed: "Official candidate identity resolved",
-        evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
-      },
-      {
-        name: "Official main SHA",
-        status: "Accepted",
-        observed: identity.upstreamSha,
-        evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
-      },
-      {
-        name: "Exact-SHA official CI",
-        status: "Accepted",
-        observed: "Completed successfully for exact SHA",
-        evidence:
-          check?.url ??
-          "https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml",
-      },
-      {
-        name: "Central token",
-        status: "Accepted",
-        observed: "Recorded expiry is valid",
-        evidence: "config/publisher.json",
-      },
-      {
-        name: "Retention",
-        status: retention.outcome === "publish" ? "Accepted" : "Rejected",
-        observed: retention.reason,
-        evidence: "Public Central metadata",
-      },
-    ],
-  };
 }
 
 async function requestWithGitHubToken(url) {
@@ -680,9 +703,10 @@ async function requestWithGitHubToken(url) {
       headers: { "User-Agent": "seed4j-main-snapshot-publisher" },
     });
   }
-  const text = logRequest
+  const log = logRequest
     ? await boundedResponseText(response, 64 * 1024)
-    : await response.text();
+    : undefined;
+  const text = log ? log.text : await response.text();
   let body = text;
   if (url.startsWith(API_ROOT) && text && !logRequest) {
     try {
@@ -691,7 +715,12 @@ async function requestWithGitHubToken(url) {
       throw new Error(`GitHub returned non-JSON content for ${url}.`);
     }
   }
-  return { body, status: response.status, headers: response.headers };
+  return {
+    body,
+    status: response.status,
+    headers: response.headers,
+    ...(log ? { logReadComplete: log.complete } : {}),
+  };
 }
 
 async function fetchExternal(url, options) {
@@ -708,22 +737,41 @@ async function fetchExternal(url, options) {
 }
 
 async function boundedResponseText(response, limit) {
-  if (!response.body) return "";
+  if (!response.body) return { text: "", complete: false };
   const reader = response.body.getReader();
-  const chunks = [];
+  const tail = Buffer.alloc(limit);
   let length = 0;
+  let complete = false;
   try {
-    while (length < limit) {
+    while (true) {
       const part = await reader.read();
-      if (part.done) break;
-      const chunk = part.value.slice(0, limit - length);
-      chunks.push(chunk);
-      length += chunk.length;
+      if (part.done) {
+        complete = true;
+        break;
+      }
+      const chunk = part.value;
+      if (chunk.length >= limit) {
+        tail.set(chunk.subarray(chunk.length - limit));
+        length = limit;
+      } else {
+        const retained = Math.min(length, limit - chunk.length);
+        tail.copyWithin(0, length - retained, length);
+        tail.set(chunk, retained);
+        length = retained + chunk.length;
+      }
     }
+  } catch (_) {
+    complete = false;
   } finally {
-    await reader.cancel();
+    try {
+      await reader.cancel();
+    } catch (_) {
+      complete = false;
+    } finally {
+      reader.releaseLock();
+    }
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return { text: tail.subarray(0, length).toString("utf8"), complete };
 }
 
 function parseRequest(arguments_) {
