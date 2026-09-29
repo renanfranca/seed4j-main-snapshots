@@ -84,6 +84,7 @@ async function qualifyPublication({
       resolved = await resolveHeadCandidate(commitResponse, request);
     } else {
       resolved = await resolveRetryCandidate({ publisherRepository, request });
+      if (resolved.outcome === "skip") return resolved;
     }
     const commitUrl = `https://github.com/seed4j/seed4j/commit/${resolved.identity.upstreamSha}`;
     criteria = observeCriterion(
@@ -338,19 +339,22 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
     `${API_ROOT}/repos/${publisherRepository}/issues?state=open&labels=publisher-failure&per_page=100`,
   );
   requireStatus(issuesResponse, 200, "publisher failure issues");
-  const matchingIssues = Array.isArray(issuesResponse.body)
-    ? issuesResponse.body.filter(
-        (issue) =>
-          issue.title === "[publisher] Seed4J main snapshot failure" &&
-          !issue.pull_request,
-      )
-    : [];
+  if (!Array.isArray(issuesResponse.body))
+    throw new Error("Invalid publisher failure issues response.");
+  const matchingIssues = issuesResponse.body.filter(
+    (issue) =>
+      issue.title === "[publisher] Seed4J main snapshot failure" &&
+      !issue.pull_request,
+  );
+  if (matchingIssues.length === 0) return noRetryablePublication();
   if (matchingIssues.length !== 1) {
     throw new Error(
       `Retry requires exactly one open marked publisher failure issue; found ${matchingIssues.length}.`,
     );
   }
-  const retryIssueBody = matchingIssues[0].body;
+  const retryIssueBody = matchingIssues[0].body ?? "";
+  if (!retryIssueBody.includes("seed4j-main-snapshot-publisher-failure-state:"))
+    return noRetryablePublication();
   const recordedIdentity = identityFromFailureState(retryIssueBody);
   const commitResponse = await request(
     `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/commits/${recordedIdentity.upstreamSha}`,
@@ -386,6 +390,14 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
     identity: officialIdentity,
     retryIssueBody,
     retryReachable,
+  });
+}
+
+function noRetryablePublication() {
+  return Object.freeze({
+    openFailureIssue: false,
+    outcome: "skip",
+    reason: "no-retryable-publication",
   });
 }
 

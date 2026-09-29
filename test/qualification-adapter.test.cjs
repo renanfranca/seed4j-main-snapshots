@@ -142,19 +142,7 @@ test("invalid publisher runtime time fails before token and retention policies",
 });
 
 test("retry reads the sole marked failure, verifies official facts and reachability, and reuses its identity", async () => {
-  const issueBody = `<!-- seed4j-main-snapshot-publisher-failure-state:start -->
-\`\`\`json
-{
-  "artifactId": "seed4j-main-snapshot",
-  "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
-  "groupId": "io.github.renanfranca",
-  "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
-  "upstreamLicenseSha256": "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
-  "upstreamPomVersion": "2.2.1-SNAPSHOT",
-  "upstreamSha": "${sha}"
-}
-\`\`\`
-<!-- seed4j-main-snapshot-publisher-failure-state:end -->`;
+  const issueBody = retryIdentityBody();
   const requests = [
     [
       /\/repos\/renanfranca\/seed4j-main-snapshots\/issues\?/,
@@ -1239,4 +1227,238 @@ test("cycle reports render preserved approvals, the Central blocker, and unperfo
   assert.match(comments[1], /Retention \| Rejected \| .*not XML/);
   assert.match(issueBody, /Final report/);
   assert.equal(closed, true);
+});
+
+test("manual retry with no open failure skips without upstream requests", async () => {
+  const requests = [[/\/issues\?state=open&labels=publisher-failure/, 200, []]];
+
+  const result = await qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: queuedRequest(requests),
+  });
+
+  assert.deepEqual(result, {
+    openFailureIssue: false,
+    outcome: "skip",
+    reason: "no-retryable-publication",
+  });
+  assert.equal(requests.length, 0);
+});
+
+test("manual retry with one failure lacking recorded identity skips without rechecking upstream", async () => {
+  const requests = [
+    [
+      /\/issues\?state=open&labels=publisher-failure/,
+      200,
+      [
+        {
+          number: 14,
+          title: "[publisher] Seed4J main snapshot failure",
+          body: "Qualification failed before identity was available. Retry state: not retryable.",
+        },
+      ],
+    ],
+  ];
+
+  const result = await qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: queuedRequest(requests),
+  });
+
+  assert.deepEqual(result, {
+    openFailureIssue: false,
+    outcome: "skip",
+    reason: "no-retryable-publication",
+  });
+  assert.equal(requests.length, 0);
+});
+
+test("invalid failure-issue API data remains an error rather than an empty retry", async () => {
+  const requests = [
+    [
+      /\/issues\?state=open&labels=publisher-failure/,
+      200,
+      { message: "invalid issue list" },
+    ],
+  ];
+
+  const result = await qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.match(result.reason, /Invalid publisher failure issues response/);
+  assert.equal(requests.length, 0);
+});
+
+function retryIdentityBody() {
+  return `<!-- seed4j-main-snapshot-publisher-failure-state:start -->
+\`\`\`json
+{
+  "artifactId": "seed4j-main-snapshot",
+  "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
+  "groupId": "io.github.renanfranca",
+  "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
+  "upstreamLicenseSha256": "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
+  "upstreamPomVersion": "2.2.1-SNAPSHOT",
+  "upstreamSha": "${sha}"
+}
+\`\`\`
+<!-- seed4j-main-snapshot-publisher-failure-state:end -->`;
+}
+
+test("recorded retry identity corruption remains a failure before any upstream request", async () => {
+  for (const body of [
+    "<!-- seed4j-main-snapshot-publisher-failure-state:start -->",
+    "<!-- seed4j-main-snapshot-publisher-failure-state:end -->",
+    retryIdentityBody().replace(
+      '"upstreamSha": "' + sha + '"',
+      '"upstreamSha": "invalid"',
+    ),
+    retryIdentityBody().replace(
+      '"artifactId": "seed4j-main-snapshot"',
+      '"artifactId": "other"',
+    ),
+    retryIdentityBody() + retryIdentityBody(),
+    retryIdentityBody().replaceAll("-->", "--"),
+  ]) {
+    const requests = [
+      [
+        /\/issues\?state=open&labels=publisher-failure/,
+        200,
+        [
+          {
+            number: 14,
+            title: "[publisher] Seed4J main snapshot failure",
+            body,
+          },
+        ],
+      ],
+    ];
+
+    const result = await qualificationResult({
+      ...cycleInvocation(),
+      cycleIssueNumber: undefined,
+      event: "workflow_dispatch",
+      operation: "retry-last-failed",
+      request: queuedRequest(requests),
+    });
+
+    assert.equal(result.outcome, "failure");
+    assert.notEqual(result.reason, "no-retryable-publication");
+    assert.equal(requests.length, 0);
+  }
+});
+
+test("duplicate failure issues remain errors even when neither has retry identity", async () => {
+  const requests = [
+    [
+      /\/issues\?state=open&labels=publisher-failure/,
+      200,
+      [
+        {
+          number: 14,
+          title: "[publisher] Seed4J main snapshot failure",
+          body: "No identity",
+        },
+        {
+          number: 15,
+          title: "[publisher] Seed4J main snapshot failure",
+          body: "No identity",
+        },
+      ],
+    ],
+  ];
+
+  const result = await qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.match(result.reason, /exactly one.*found 2/);
+  assert.equal(requests.length, 0);
+});
+
+test("retry issue query failures do not become absence of an eligible publication", async () => {
+  for (const status of [401, 403, 503]) {
+    const requests = [
+      [
+        /\/issues\?state=open&labels=publisher-failure/,
+        status,
+        { message: "request failed" },
+      ],
+    ];
+
+    const result = await qualificationResult({
+      ...cycleInvocation(),
+      cycleIssueNumber: undefined,
+      event: "workflow_dispatch",
+      operation: "retry-last-failed",
+      request: queuedRequest(requests),
+    });
+
+    assert.equal(result.outcome, "failure");
+    assert.match(
+      result.reason,
+      new RegExp(
+        `publisher failure issues request returned status '${status}'`,
+      ),
+    );
+    assert.equal(requests.length, 0);
+  }
+});
+
+test("retry provenance mismatches remain failures on the recorded SHA", async () => {
+  const requests = [
+    [
+      /\/issues\?state=open&labels=publisher-failure/,
+      200,
+      [
+        {
+          number: 14,
+          title: "[publisher] Seed4J main snapshot failure",
+          body: retryIdentityBody(),
+        },
+      ],
+    ],
+    [`/repos/seed4j/seed4j/commits/${sha}`, 200, commit()],
+    [`/repos/seed4j/seed4j/contents/pom.xml?ref=${sha}`, 200, pomContent()],
+    [
+      `/repos/seed4j/seed4j/contents/LICENSE.txt?ref=${sha}`,
+      200,
+      {
+        encoding: "base64",
+        content: Buffer.from("changed license").toString("base64"),
+      },
+    ],
+  ];
+
+  const result = await qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.match(
+    result.reason,
+    /does not match re-fetched official upstream facts/,
+  );
+  assert.equal(requests.length, 0);
 });

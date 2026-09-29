@@ -102,7 +102,12 @@ jobs:
         if: steps.candidate.outputs.outcome == 'skip'
         env:
           REASON: ${{ steps.candidate.outputs.reason }}
-        run: echo "Publisher skipped safely because ${REASON}." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          if [ "$REASON" = "no-retryable-publication" ]; then
+            printf '%s\n' "No failed publication is eligible for retry. Use operation ‘head’ to recheck the current official main." >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Publisher skipped safely because %s.\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     name: build unprivileged upstream candidate

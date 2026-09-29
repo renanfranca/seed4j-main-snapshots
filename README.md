@@ -177,8 +177,23 @@ mentions `@renanfranca` only when the SHA, blocker, or final outcome changes. Th
 main JAR, and tests JAR, records what is publicly confirmed, and closes the cycle. It never sends the bundle again
 automatically after an ambiguous deploy.
 
-`retry-last-failed` remains a separate manual operation tied to the sole existing `publisher-failure` issue and its
-recorded immutable identity. Inspect the cycle report, public artifacts, and failure issue before using it. Repair a
+Use manual `head` to recheck the current official `main`; it starts or joins a publication cycle and evaluates that
+current SHA. Use `retry-last-failed` only to retry a publication with a recorded immutable identity in the sole open
+`publisher-failure` issue. The retry re-fetches provenance, verifies reachability, requires successful official CI for
+the recorded SHA, and applies the existing token and retention checks.
+
+When no matching failure issue exists, or the sole issue has no recorded identity block, retry returns `outcome: skip`
+with stable reason `no-retryable-publication`. The Actions run summary displays:
+
+> No failed publication is eligible for retry. Use operation ‘head’ to recheck the current official main.
+
+This skip makes no upstream requests, builds, deployments, or issue changes. It leaves an existing failure issue open
+and does not affect an open publication cycle. It does not automatically switch to `head`. Duplicate failure issues,
+corrupted identity blocks (including partial or malformed markers), provenance mismatches, and API query failures
+remain errors and require inspection.
+
+`retry-last-failed` remains a separate manual operation tied to that existing failure issue and its recorded immutable
+identity. Inspect the cycle report, public artifacts, and failure issue before using it. Repair a
 publisher or external cause first; do not treat a failed deploy as proof that Central received nothing. A successful
 manual retry can close the failure issue, but it does not restart or extend a closed cycle.
 

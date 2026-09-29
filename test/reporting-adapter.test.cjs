@@ -219,3 +219,53 @@ test("successful publication comments on and closes the sole open failure issue"
     state_reason: "completed",
   });
 });
+
+test("ineligible manual retries flow through reporting without reading or changing any issue", async () => {
+  const { qualificationResult } = require("../scripts/qualify-candidate.cjs");
+  for (const issues of [
+    [],
+    [
+      {
+        number: 14,
+        title: "[publisher] Seed4J main snapshot failure",
+        body: "No trusted identity available.",
+      },
+    ],
+  ]) {
+    const calls = [];
+    const request = async (url, options = {}) => {
+      calls.push({ url, options });
+      return { status: 200, body: issues };
+    };
+
+    const qualification = await qualificationResult({
+      config: {
+        schemaVersion: 1,
+        pilotCompleted: true,
+        scheduleMode: "weekly",
+        quotaReview: null,
+        centralTokenExpiresOn: "2027-09-01",
+      },
+      event: "workflow_dispatch",
+      operation: "retry-last-failed",
+      ref: "refs/heads/main",
+      publisherRepository: "renanfranca/seed4j-main-snapshots",
+      now: "2026-09-29T12:00:00Z",
+      request,
+    });
+    const reported = await reportPublisherResult({
+      ...qualification,
+      qualifyResult: "success",
+      buildResult: "skipped",
+      deployResult: "skipped",
+      request,
+    });
+
+    assert.equal(qualification.outcome, "skip");
+    assert.equal("identity" in qualification, false);
+    assert.deepEqual(reported, { action: "none", reason: "expected-skip" });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /issues\?state=open&labels=publisher-failure/);
+    assert.equal(calls[0].options.method, undefined);
+  }
+});

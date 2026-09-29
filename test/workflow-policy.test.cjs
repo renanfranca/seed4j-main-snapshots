@@ -362,3 +362,49 @@ test("disabled daily and idle hourly runs do not emit token notifications", () =
     /needs\.cycle\.outputs\.action == 'create' \|\| needs\.cycle\.outputs\.action == 'join'/,
   );
 });
+
+test("the workflow skip summary guides an ineligible manual retry to head", async () => {
+  const { mkdtempSync, rmSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
+  const { join } = require("node:path");
+  const { spawnSync } = require("node:child_process");
+  const workflow = read(".github/workflows/publish.yml");
+  const step = /- name: Record expected skip([\s\S]*?)\n  build:/.exec(
+    workflow,
+  )[1];
+  const [, inline, block] = /        run: ([^\n]+)([\s\S]*)$/.exec(step);
+  const command = inline === "|" ? block.replace(/^          /gm, "") : inline;
+  const directory = mkdtempSync(join(tmpdir(), "publisher-skip-summary-"));
+  const summary = join(directory, "summary.md");
+  const qualification = await qualificationResult({
+    config: readPublisherConfig(
+      resolve(repositoryRoot, "config/publisher.json"),
+    ),
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    ref: "refs/heads/main",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    now: "2026-09-29T12:00:00Z",
+    request: async () => ({ status: 200, body: [] }),
+  });
+
+  try {
+    const execution = spawnSync("bash", ["-e", "-c", command], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REASON: qualification.reason,
+        GITHUB_STEP_SUMMARY: summary,
+      },
+    });
+
+    assert.equal(qualification.outcome, "skip");
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      readFileSync(summary, "utf8").trim(),
+      "No failed publication is eligible for retry. Use operation ‘head’ to recheck the current official main.",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
