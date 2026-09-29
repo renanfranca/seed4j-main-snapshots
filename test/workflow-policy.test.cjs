@@ -334,3 +334,31 @@ function step(workflowJob, name) {
   assert.ok(match, `Missing ${name} step`);
   return match[0];
 }
+
+test("hourly publisher checks only re-evaluate open cycles before qualification", () => {
+  const workflow = read(".github/workflows/publish.yml");
+
+  assert.match(workflow, /cron: "41 \* \* \* \*"/);
+  assert.match(workflow, /^  cycle:\s*$/m);
+  assert.match(
+    workflow,
+    /node scripts\/publication-cycle\.cjs start --config config\/publisher\.json/,
+  );
+  assert.match(workflow, /^    needs: cycle$/m);
+  assert.match(
+    workflow,
+    /needs\.cycle\.outputs\.action == 'create' \|\| needs\.cycle\.outputs\.action == 'join'/,
+  );
+});
+
+test("disabled daily and idle hourly runs do not emit token notifications", () => {
+  const workflow = read(".github/workflows/publish.yml");
+  const rotation = job(workflow, "token-rotation");
+
+  assert.match(rotation, /needs: cycle/);
+  assert.match(rotation, /github\.event\.schedule != '41 \* \* \* \*'/);
+  assert.match(
+    rotation,
+    /needs\.cycle\.outputs\.action == 'create' \|\| needs\.cycle\.outputs\.action == 'join'/,
+  );
+});

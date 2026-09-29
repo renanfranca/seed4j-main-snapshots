@@ -23,6 +23,7 @@ const DAILY_SCHEDULE = "17 6 * * 0,2-6";
 
 async function qualifyPublication({
   config,
+  cycleIssueNumber,
   event,
   now,
   operation,
@@ -55,17 +56,32 @@ async function qualifyPublication({
       operation === "head"
         ? await resolveHeadCandidate(request)
         : await resolveRetryCandidate({ publisherRepository, request });
+    if (cycleIssueNumber) {
+      requireUsableRecordedToken(
+        validatedConfig.centralTokenExpiresOn,
+        canonicalPublisherTimestamp(now),
+      );
+    }
+    const upstreamCheck = await officialWorkflowCheck(
+      resolved.identity.upstreamSha,
+      request,
+    );
     const qualification = qualifyCandidate({
       candidate: resolved.identity,
       operation,
       retryIssueBody: resolved.retryIssueBody,
       retryReachable: resolved.retryReachable,
-      upstreamCheck: await officialWorkflowCheck(
-        resolved.identity.upstreamSha,
-        request,
-      ),
+      upstreamCheck,
     });
     if (qualification.outcome === "skip") {
+      if (cycleIssueNumber && operation === "head") {
+        return await cycleRetryResult(
+          resolved.identity,
+          upstreamCheck,
+          now,
+          request,
+        );
+      }
       return qualification;
     }
     const publisherTimestamp = canonicalPublisherTimestamp(now);
@@ -84,6 +100,15 @@ async function qualifyPublication({
         : {}),
       ...retention,
       upstreamSha: resolved.identity.upstreamSha,
+      ...(cycleIssueNumber
+        ? {
+            assessment: cycleAssessment(
+              resolved.identity,
+              upstreamCheck,
+              retention,
+            ),
+          }
+        : {}),
     });
   } catch (error) {
     if (resolved?.identity) {
@@ -97,11 +122,65 @@ async function qualificationResult(invocation) {
   try {
     return await qualifyPublication(invocation);
   } catch (error) {
+    if (invocation.cycleIssueNumber && retryableExternalError(error)) {
+      return Object.freeze({
+        outcome: "retry",
+        reason: sanitizeDiagnostic(error.message),
+        ...(error.identity ? { upstreamSha: error.identity.upstreamSha } : {}),
+        assessment: {
+          criteria: [
+            {
+              name: "Qualification",
+              status: "Rejected",
+              observed: sanitizeDiagnostic(error.message),
+              evidence: "External request failed",
+            },
+          ],
+          nextCheck: nextCheck(
+            invocation.now,
+            error.retryAt,
+            error.retryDelayMs,
+          ),
+        },
+      });
+    }
     return Object.freeze({
       ...(error.identity ? { identity: error.identity } : {}),
       outcome: "failure",
       reason: sanitizeDiagnostic(error.message),
       ...(error.identity ? { upstreamSha: error.identity.upstreamSha } : {}),
+      ...(invocation.cycleIssueNumber
+        ? {
+            assessment: {
+              criteria: [
+                {
+                  name: "Official main SHA",
+                  status: error.identity ? "Accepted" : "Not evaluated",
+                  observed: error.identity?.upstreamSha ?? "Unavailable",
+                  evidence: error.identity
+                    ? `https://github.com/seed4j/seed4j/commit/${error.identity.upstreamSha}`
+                    : "Official main could not be resolved",
+                },
+                {
+                  name: "Qualification",
+                  status: "Rejected",
+                  observed: sanitizeDiagnostic(error.message),
+                  evidence: "Publisher qualification run",
+                },
+                ...(/Central token/.test(error.message)
+                  ? [
+                      {
+                        name: "Central token",
+                        status: "Rejected",
+                        observed: sanitizeDiagnostic(error.message),
+                        evidence: "config/publisher.json",
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          }
+        : {}),
     });
   }
 }
@@ -123,7 +202,7 @@ function requireInvocation({
   }
   if (
     event === "schedule" &&
-    ![WEEKLY_SCHEDULE, DAILY_SCHEDULE].includes(schedule)
+    ![WEEKLY_SCHEDULE, DAILY_SCHEDULE, "41 * * * *"].includes(schedule)
   ) {
     throw new Error(`Unsupported publisher schedule '${schedule ?? ""}'.`);
   }
@@ -131,6 +210,9 @@ function requireInvocation({
 
 function scheduledPublicationDecision({ config, event, schedule }) {
   if (event !== "schedule") {
+    return undefined;
+  }
+  if (schedule === "41 * * * *") {
     return undefined;
   }
   if (!config.pilotCompleted) {
@@ -297,9 +379,9 @@ async function officialWorkflowCheck(upstreamSha, request) {
     `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/actions/workflows/github-actions.yml/runs?event=push&head_sha=${upstreamSha}&per_page=100`,
   );
   requireStatus(response, 200, "official upstream workflow runs");
-  const runs = Array.isArray(response.body?.workflow_runs)
-    ? response.body.workflow_runs
-    : [];
+  if (!Array.isArray(response.body?.workflow_runs))
+    throw new Error("Invalid official workflow runs response.");
+  const runs = response.body.workflow_runs;
   const run = runs.find(
     (candidate) =>
       candidate.head_sha === upstreamSha && candidate.event === "push",
@@ -311,6 +393,8 @@ async function officialWorkflowCheck(upstreamSha, request) {
         headSha: run.head_sha,
         status: run.status,
         workflow: "github-actions.yml",
+        ...(run.id ? { id: run.id } : {}),
+        ...(run.html_url ? { url: run.html_url } : {}),
       }
     : undefined;
 }
@@ -347,13 +431,228 @@ async function centralMetadata(identity, request) {
 
 function requireStatus(response, expectedStatus, label) {
   if (response?.status !== expectedStatus) {
-    throw new Error(
+    const error = new Error(
       `${label} request returned status '${response?.status ?? ""}'.`,
     );
+    error.retryable =
+      response?.status === 429 ||
+      response?.status >= 500 ||
+      (response?.status === 403 &&
+        (response.headers?.get?.("x-ratelimit-remaining") === "0" ||
+          response.headers?.get?.("retry-after")));
+    const retryAfter = response?.headers?.get?.("retry-after");
+    const reset = response?.headers?.get?.("x-ratelimit-reset");
+    if (retryAfter && /^\d+$/.test(retryAfter))
+      error.retryDelayMs = Number(retryAfter) * 1000;
+    else if (retryAfter && !Number.isNaN(Date.parse(retryAfter)))
+      error.retryAt = new Date(retryAfter).toISOString();
+    else if (reset && /^\d+$/.test(reset))
+      error.retryAt = new Date(Number(reset) * 1000).toISOString();
+    throw error;
   }
 }
 
+function retryableExternalError(error) {
+  return error.retryable === true;
+}
+
+function nextCheck(now, retryAt, retryDelayMs = 0) {
+  const hourly = Date.parse(now) + 60 * 60 * 1000;
+  return new Date(
+    Math.max(hourly, Date.parse(retryAt) || 0, Date.parse(now) + retryDelayMs),
+  )
+    .toISOString()
+    .replace(".000Z", "Z");
+}
+
+async function cycleRetryResult(identity, check, now, request) {
+  const state = !check
+    ? "Missing official run"
+    : check.status !== "completed"
+      ? "Official run in progress"
+      : check.conclusion === "cancelled"
+        ? "Official run cancelled"
+        : "Official run failed";
+  const diagnostic =
+    state === "Official run failed"
+      ? await officialFailureEvidence(check, request)
+      : undefined;
+  const observed = diagnostic ? `${state}: ${diagnostic.summary}` : state;
+  return Object.freeze({
+    outcome: "retry",
+    reason: observed,
+    upstreamSha: identity.upstreamSha,
+    assessment: {
+      criteria: [
+        {
+          name: "Qualification",
+          status: "Accepted",
+          observed: "Official candidate identity resolved",
+          evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
+        },
+        {
+          name: "Official main SHA",
+          status: "Accepted",
+          observed: identity.upstreamSha,
+          evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
+        },
+        {
+          name: "Exact-SHA official CI",
+          status: "Rejected",
+          observed: sanitizeExternalText(observed),
+          evidence:
+            diagnostic?.url ??
+            check?.url ??
+            `https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml`,
+        },
+        {
+          name: "Central token",
+          status: "Accepted",
+          observed: "Recorded expiry is valid",
+          evidence: "config/publisher.json",
+        },
+        {
+          name: "Retention",
+          status: "Not evaluated",
+          observed: "CI not approved",
+          evidence: "No Central lookup",
+        },
+      ],
+      nextCheck: nextCheck(now),
+      ...(diagnostic?.diagnostics
+        ? { diagnostics: diagnostic.diagnostics }
+        : {}),
+    },
+  });
+}
+
+async function officialFailureEvidence(check, request) {
+  if (!Number.isInteger(check.id)) return undefined;
+  try {
+    const response = await request(
+      `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/actions/runs/${check.id}/jobs?per_page=100`,
+    );
+    requireStatus(response, 200, "official CI jobs");
+    if (!Array.isArray(response.body?.jobs))
+      return { summary: "cause unknown; invalid job response", url: check.url };
+    const jobs = response.body.jobs.filter(
+      (candidate) => candidate.conclusion === "failure",
+    );
+    if (jobs.length === 0)
+      return {
+        summary: "cause unknown; no failed job was returned",
+        url: check.url,
+      };
+    const diagnostics = [];
+    for (const job of jobs.slice(0, 5)) {
+      const step =
+        job.steps?.find((candidate) => candidate.conclusion === "failure")
+          ?.name ?? "unknown step";
+      let excerpt = "cause unknown; no relevant log excerpt available";
+      if (Number.isInteger(job.id)) {
+        try {
+          const logs = await request(
+            `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/actions/jobs/${job.id}/logs`,
+          );
+          if (logs.status === 200 && typeof logs.body === "string")
+            excerpt = relevantLogExcerpt(logs.body);
+        } catch (_) {
+          excerpt = "cause unknown; job logs unavailable";
+        }
+      }
+      diagnostics.push({
+        summary: sanitizeExternalText(
+          `${job.name ?? "unknown job"} / ${step}: ${excerpt}`,
+        ),
+        url: job.html_url ?? check.url,
+      });
+    }
+    return {
+      summary:
+        jobs.length > 1
+          ? `${jobs.length} failed jobs${jobs.length > 5 ? "; showing first 5" : ""}; ${diagnostics[0].summary}`
+          : diagnostics[0].summary,
+      url: jobs.length > 1 ? check.url : diagnostics[0].url,
+      diagnostics,
+    };
+  } catch (_) {
+    return {
+      summary: "cause unknown; job diagnostics unavailable",
+      url: check.url,
+    };
+  }
+}
+
+function relevantLogExcerpt(log) {
+  const relevant = String(log)
+    .slice(-64 * 1024)
+    .split(/\r?\n/)
+    .filter((line) =>
+      /\b(error|failed|ENOSPC|EACCES|ENOENT|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/i.test(
+        line,
+      ),
+    );
+  const line = relevant.at(-1);
+  if (!line) return "cause unknown; no error line found";
+  const code = /\b(ENOSPC|EACCES|ENOENT|ETIMEDOUT|ECONNRESET|EAI_AGAIN)\b/.exec(
+    line,
+  )?.[1];
+  const confirmed =
+    code === "ENOSPC" && /no space left on device/i.test(line)
+      ? "Confirmed cause: storage exhausted (ENOSPC)"
+      : code === "EACCES" && /permission denied/i.test(line)
+        ? "Confirmed cause: access denied (EACCES)"
+        : code === "ENOENT" && /no such file or directory/i.test(line)
+          ? "Confirmed cause: missing file (ENOENT)"
+          : undefined;
+  return `${confirmed ?? `Cause unknown${code ? `; observed error code ${code}` : ""}`}; ${sanitizeExternalText(line)}`;
+}
+
+function sanitizeExternalText(value) {
+  return sanitizeDiagnostic(value).replace(/https?:\/\//gi, "https[:]//");
+}
+
+function cycleAssessment(identity, check, retention) {
+  return {
+    criteria: [
+      {
+        name: "Qualification",
+        status: "Accepted",
+        observed: "Official candidate identity resolved",
+        evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
+      },
+      {
+        name: "Official main SHA",
+        status: "Accepted",
+        observed: identity.upstreamSha,
+        evidence: `https://github.com/seed4j/seed4j/commit/${identity.upstreamSha}`,
+      },
+      {
+        name: "Exact-SHA official CI",
+        status: "Accepted",
+        observed: "Completed successfully for exact SHA",
+        evidence:
+          check?.url ??
+          "https://github.com/seed4j/seed4j/actions/workflows/github-actions.yml",
+      },
+      {
+        name: "Central token",
+        status: "Accepted",
+        observed: "Recorded expiry is valid",
+        evidence: "config/publisher.json",
+      },
+      {
+        name: "Retention",
+        status: retention.outcome === "publish" ? "Accepted" : "Rejected",
+        observed: retention.reason,
+        evidence: "Public Central metadata",
+      },
+    ],
+  };
+}
+
 async function requestWithGitHubToken(url) {
+  const logRequest = /\/actions\/jobs\/\d+\/logs$/.test(url);
   const headers = {
     Accept: url.startsWith(API_ROOT)
       ? "application/vnd.github+json"
@@ -369,17 +668,62 @@ async function requestWithGitHubToken(url) {
     headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
     headers["X-GitHub-Api-Version"] = "2022-11-28";
   }
-  const response = await fetch(url, { headers });
-  const text = await response.text();
+  let response = await fetchExternal(url, {
+    headers,
+    redirect: logRequest ? "manual" : "follow",
+  });
+  if (logRequest && response.status === 302) {
+    const location = response.headers.get("location");
+    if (!location || !location.startsWith("https://"))
+      throw new Error("Official job logs redirect is invalid.");
+    response = await fetchExternal(location, {
+      headers: { "User-Agent": "seed4j-main-snapshot-publisher" },
+    });
+  }
+  const text = logRequest
+    ? await boundedResponseText(response, 64 * 1024)
+    : await response.text();
   let body = text;
-  if (url.startsWith(API_ROOT) && text) {
+  if (url.startsWith(API_ROOT) && text && !logRequest) {
     try {
       body = JSON.parse(text);
     } catch (_) {
       throw new Error(`GitHub returned non-JSON content for ${url}.`);
     }
   }
-  return { body, status: response.status };
+  return { body, status: response.status, headers: response.headers };
+}
+
+async function fetchExternal(url, options) {
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (cause) {
+    const error = new Error("External network request failed or timed out.");
+    error.retryable = true;
+    throw error;
+  }
+}
+
+async function boundedResponseText(response, limit) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (length < limit) {
+      const part = await reader.read();
+      if (part.done) break;
+      const chunk = part.value.slice(0, limit - length);
+      chunks.push(chunk);
+      length += chunk.length;
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function parseRequest(arguments_) {
@@ -402,6 +746,9 @@ async function run() {
     writeResult(
       await qualificationResult({
         config: readPublisherConfig(configPath),
+        cycleIssueNumber: process.env.PUBLISHER_CYCLE_ISSUE
+          ? Number(process.env.PUBLISHER_CYCLE_ISSUE)
+          : undefined,
         event: process.env.PUBLISHER_EVENT,
         now: new Date().toISOString(),
         operation: process.env.PUBLISHER_OPERATION,
@@ -421,6 +768,13 @@ async function run() {
 
 function writeResult(result) {
   const output = {
+    ...(result.assessment
+      ? {
+          assessment: Buffer.from(JSON.stringify(result.assessment)).toString(
+            "base64url",
+          ),
+        }
+      : {}),
     ...(result.identity ? { identity: encodeIdentity(result.identity) } : {}),
     outcome: result.outcome,
     reason: result.reason,

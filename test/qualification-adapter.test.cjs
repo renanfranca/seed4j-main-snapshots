@@ -303,3 +303,416 @@ function queuedRequest(requests) {
     return { body, status };
   };
 }
+
+test("a cycle rechecks failed official CI as a retry with exact SHA evidence", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "retry");
+  assert.equal(result.upstreamSha, sha);
+  assert.equal(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Official main SHA",
+    ).status,
+    "Accepted",
+  );
+  assert.equal(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).status,
+    "Rejected",
+  );
+  assert.match(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /failed/i,
+  );
+  assert.equal(result.assessment.nextCheck, "2026-09-28T12:41:00Z");
+  assert.equal(requests.length, 0);
+});
+
+test("a failed official run reports the failed job, step, observed error code, and inert log evidence", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+  requests[3][2].workflow_runs[0].id = 12;
+  requests[3][2].workflow_runs[0].html_url =
+    "https://github.com/seed4j/seed4j/actions/runs/12";
+  requests.push([
+    "/repos/seed4j/seed4j/actions/runs/12/jobs?per_page=100",
+    200,
+    {
+      jobs: [
+        {
+          id: 19,
+          name: "verify",
+          conclusion: "failure",
+          html_url: "https://github.com/seed4j/seed4j/actions/runs/12/job/19",
+          steps: [{ name: "Maven verify", conclusion: "failure" }],
+        },
+      ],
+    },
+  ]);
+  requests.push([
+    "/repos/seed4j/seed4j/actions/jobs/19/logs",
+    200,
+    "Authorization: Bearer secret-value\nError: ENOSPC: no space left on device @evil [login](https://attacker.example)\n",
+  ]);
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "retry");
+  assert.match(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /verify.*Maven verify.*Confirmed cause.*ENOSPC/,
+  );
+  assert.match(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).evidence,
+    /\/job\/19/,
+  );
+  assert.doesNotMatch(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /secret-value|@evil|\[login\]\(/,
+  );
+  assert.doesNotMatch(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /https?:\/\//,
+  );
+  assert.equal(requests.length, 0);
+});
+
+test("a cycle retries HTTP 503 and API rate limits without inventing a candidate", async () => {
+  const common = {
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    schedule: "41 * * * *",
+  };
+
+  const unavailable = await qualificationResult({
+    ...common,
+    request: async () => ({ status: 503, body: {} }),
+  });
+  const limited = await qualificationResult({
+    ...common,
+    request: async () => ({
+      status: 429,
+      body: {},
+      headers: { get: (name) => (name === "retry-after" ? "7200" : null) },
+    }),
+  });
+
+  assert.equal(unavailable.outcome, "retry");
+  assert.equal(unavailable.assessment.nextCheck, "2026-09-28T12:41:00Z");
+  assert.equal(limited.outcome, "retry");
+  assert.equal(limited.assessment.nextCheck, "2026-09-28T13:41:00Z");
+  assert.equal("upstreamSha" in limited, false);
+});
+
+test("cycle diagnostics distinguish absent, running, cancelled, and failed official runs", async () => {
+  const common = {
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    schedule: "41 * * * *",
+  };
+  for (const [state, expected] of [
+    ["missing", "Missing official run"],
+    ["in_progress", "Official run in progress"],
+    ["cancelled", "Official run cancelled"],
+    ["failure", "Official run failed"],
+  ]) {
+    const requests = officialHeadRequests({
+      centralStatus: undefined,
+      workflowConclusion: state,
+    });
+    if (state === "missing") requests[3][2].workflow_runs = [];
+    if (state === "in_progress")
+      requests[3][2].workflow_runs[0].status = "in_progress";
+    const result = await qualificationResult({
+      ...common,
+      request: queuedRequest(requests),
+    });
+
+    assert.equal(result.outcome, "retry");
+    assert.match(
+      result.assessment.criteria.find(
+        (criterion) => criterion.name === "Exact-SHA official CI",
+      ).observed,
+      new RegExp(expected),
+    );
+    assert.equal(requests.length, 0);
+  }
+});
+
+test("a later successful exact-SHA official run makes the same cycle publishable", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: 404,
+    workflowConclusion: "success",
+  });
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T12:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "publish");
+  assert.equal(result.identity.upstreamSha, sha);
+  assert.equal(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).status,
+    "Accepted",
+  );
+  assert.equal(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Retention",
+    ).status,
+    "Accepted",
+  );
+  assert.equal(requests.length, 0);
+});
+
+test("an expired recorded Central token ends a cycle even when official CI is pending", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+
+  const result = await qualificationResult({
+    config: {
+      ...baseConfig,
+      pilotCompleted: true,
+      centralTokenExpiresOn: "2026-09-27",
+    },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T12:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.match(result.reason, /expired/);
+  assert.equal(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Central token",
+    ).status,
+    "Rejected",
+  );
+  assert.equal(requests.length, 1);
+});
+
+test("failed official CI without a diagnostic code leaves the cause unknown", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+  requests[3][2].workflow_runs[0].id = 12;
+  requests.push([
+    "/repos/seed4j/seed4j/actions/runs/12/jobs?per_page=100",
+    200,
+    {
+      jobs: [
+        {
+          id: 19,
+          name: "verify",
+          conclusion: "failure",
+          steps: [{ name: "Maven verify", conclusion: "failure" }],
+        },
+      ],
+    },
+  ]);
+  requests.push([
+    "/repos/seed4j/seed4j/actions/jobs/19/logs",
+    200,
+    "Process failed without a diagnostic code",
+  ]);
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.match(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /Cause unknown/,
+  );
+  assert.doesNotMatch(
+    result.assessment.criteria.find(
+      (criterion) => criterion.name === "Exact-SHA official CI",
+    ).observed,
+    /Confirmed cause/,
+  );
+});
+
+test("invalid official CI API data ends the cycle instead of retrying forever", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+  requests[3][2] = { workflow_runs: "invalid" };
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "failure");
+  assert.match(result.reason, /Invalid official workflow runs/);
+});
+
+test("failed official CI records every failed job with its step, bounded excerpt, and link", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+  requests[3][2].workflow_runs[0].id = 12;
+  requests.push([
+    "/repos/seed4j/seed4j/actions/runs/12/jobs?per_page=100",
+    200,
+    {
+      jobs: [
+        {
+          id: 19,
+          name: "backend",
+          conclusion: "failure",
+          html_url: "https://github.com/seed4j/seed4j/actions/runs/12/job/19",
+          steps: [{ name: "Maven verify", conclusion: "failure" }],
+        },
+        {
+          id: 20,
+          name: "frontend",
+          conclusion: "failure",
+          html_url: "https://github.com/seed4j/seed4j/actions/runs/12/job/20",
+          steps: [{ name: "npm test", conclusion: "failure" }],
+        },
+      ],
+    },
+  ]);
+  requests.push([
+    "/repos/seed4j/seed4j/actions/jobs/19/logs",
+    200,
+    "Error: ENOSPC: no space left on device",
+  ]);
+  requests.push([
+    "/repos/seed4j/seed4j/actions/jobs/20/logs",
+    200,
+    "Error: assertion failed in component test",
+  ]);
+
+  const result = await qualificationResult({
+    config: { ...baseConfig, pilotCompleted: true },
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "retry");
+  assert.equal(result.assessment.diagnostics.length, 2);
+  assert.match(
+    result.assessment.diagnostics[0].summary,
+    /backend.*Maven verify.*ENOSPC/,
+  );
+  assert.match(
+    result.assessment.diagnostics[1].summary,
+    /frontend.*npm test.*Cause unknown/,
+  );
+  assert.match(result.assessment.diagnostics[1].url, /\/job\/20/);
+  assert.equal(requests.length, 0);
+});
+
+test("an hourly recheck continues a manual cycle while the scheduled pilot gate is disabled", async () => {
+  const requests = officialHeadRequests({
+    centralStatus: undefined,
+    workflowConclusion: "failure",
+  });
+
+  const result = await qualificationResult({
+    config: baseConfig,
+    cycleIssueNumber: 52,
+    event: "schedule",
+    now: "2026-09-28T11:41:00Z",
+    operation: "head",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+    schedule: "41 * * * *",
+  });
+
+  assert.equal(result.outcome, "retry");
+  assert.equal(requests.length, 0);
+});

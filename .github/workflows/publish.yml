@@ -14,6 +14,7 @@ on:
   schedule:
     - cron: "17 6 * * 1"
     - cron: "17 6 * * 0,2-6"
+    - cron: "41 * * * *"
 
 concurrency:
   group: seed4j-main-snapshot-publisher
@@ -22,8 +23,43 @@ concurrency:
 permissions: {}
 
 jobs:
+  cycle:
+    name: open or join publication cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      action: ${{ steps.start.outputs.action }}
+      issue: ${{ steps.start.outputs.issue }}
+      deadline: ${{ steps.start.outputs.deadline }}
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.12.0
+          cache: npm
+      - name: Install trusted publisher dependencies
+        run: npm ci
+      - name: Start or join cycle
+        id: start
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_EVENT: ${{ github.event_name }}
+          PUBLISHER_OPERATION: ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'head' }}
+          PUBLISHER_REF: ${{ github.ref }}
+          PUBLISHER_SCHEDULE: ${{ github.event.schedule }}
+        run: node scripts/publication-cycle.cjs start --config config/publisher.json
+
   qualify:
     name: qualify immutable upstream candidate
+    needs: cycle
+    if: needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -35,6 +71,7 @@ jobs:
       identity: ${{ steps.candidate.outputs.identity }}
       reason: ${{ steps.candidate.outputs.reason }}
       upstreamSha: ${{ steps.candidate.outputs['upstream-sha'] }}
+      assessment: ${{ steps.candidate.outputs.assessment }}
     steps:
       - name: Checkout trusted publisher
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -58,6 +95,7 @@ jobs:
           PUBLISHER_OPERATION: ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'head' }}
           PUBLISHER_REF: ${{ github.ref }}
           PUBLISHER_SCHEDULE: ${{ github.event.schedule }}
+          PUBLISHER_CYCLE_ISSUE: ${{ needs.cycle.outputs.issue }}
         run: node scripts/qualify-candidate.cjs --config config/publisher.json
 
       - name: Record expected skip
@@ -257,10 +295,11 @@ jobs:
   report:
     name: report publisher outcome
     needs:
+      - cycle
       - qualify
       - build
       - deploy
-    if: always()
+    if: always() && (needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -281,7 +320,25 @@ jobs:
       - name: Install trusted publisher dependencies
         run: npm ci
 
+      - name: Record cycle attempt and final report
+        if: needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join'
+        env:
+          BUILD_DIAGNOSTIC: ${{ needs.build.outputs.diagnostic }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPLOY_DIAGNOSTIC: ${{ needs.deploy.outputs.diagnostic }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_ASSESSMENT: ${{ needs.qualify.outputs.assessment }}
+          PUBLISHER_CYCLE_ISSUE: ${{ needs.cycle.outputs.issue }}
+          PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
+          PUBLISHER_OUTCOME: ${{ needs.qualify.outputs.outcome }}
+          PUBLISHER_REASON: ${{ needs.qualify.outputs.reason }}
+          PUBLISHER_UPSTREAM_SHA: ${{ needs.qualify.outputs.upstreamSha }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}?attempt=${{ github.run_attempt }}
+        run: node scripts/publication-cycle.cjs finish
+
       - name: Create, update, close, or skip the single failure issue
+        if: always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed') || needs.qualify.outputs.outcome == 'publish')
         env:
           BUILD_DIAGNOSTIC: ${{ needs.build.outputs.diagnostic }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -297,6 +354,8 @@ jobs:
 
   token-rotation:
     name: report Central token rotation status
+    needs: cycle
+    if: github.event.schedule != '41 * * * *' && (needs.cycle.outputs.action == 'create' || needs.cycle.outputs.action == 'join' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
