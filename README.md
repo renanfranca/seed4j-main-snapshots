@@ -107,11 +107,85 @@ reviewed config change after `renanfranca` records projected monthly release cou
 the current Central limits. A changed allowance requires a new quota review. Automation never enables daily mode or a
 paid plan automatically.
 
-## Failure, retry, and token rotation
+## Publication cycles and reports
 
-Missing, queued, pending, cancelled, or unsuccessful official upstream CI is an expected skip. A snapshot published
-less than 60 days ago is also an expected skip. These outcomes remain visible in the workflow summary and never create
-a failure issue.
+Each enabled weekly or daily schedule, and each manual `head` dispatch from publisher `main`, starts by opening or
+joining one `[publisher] Seed4J main snapshot publication cycle` issue. The issue
+mentions `@renanfranca`, records the scheduled time (or manual dispatch time), actual cycle start, and a deadline 48
+hours after that actual start. A manual `head` checks immediately even when joining an open cycle. It does not reset the
+deadline. If an old cycle has expired, a manual `head` closes it and starts a fresh manual cycle. A disabled daily
+schedule has no issue or notification.
+
+The hourly cron at minute 41 only rechecks an open cycle. It cannot start one. Each check queries the latest official
+`main` and records the evaluated full SHA; a changed SHA is visible in the issue and mentioned in a comment. A build
+already started remains bound to its qualified, immutable SHA. The exact SHA still needs a successful official
+`github-actions.yml` push run before the publisher builds. The publisher neither starts nor changes official CI.
+
+Missing, running, cancelled, or failed official CI is a recoverable cycle block. A failed run is diagnosed from up to
+five failed jobs, their steps, and bounded log excerpts, with links; the report states when more failed jobs exist. An observed error code is reported as evidence; if logs do not
+prove a cause, the report says the cause is unknown. Job logs are consumed to the end while retaining only the last
+64 KiB of bytes. The 30-second request timeout also bounds streaming; readers are cancelled and released afterward.
+Interrupted reads explicitly report incomplete analysis of the received tail, and unavailable logs leave the cause
+unknown. Excerpts prioritize recognized error codes, then substantive errors, then generic termination messages,
+choosing the latest occurrence within each priority. For example, a later `Process completed with exit code 1` does
+not replace `ENOSPC: no space left on device`. Log evidence remains sanitized and bounded before publication.
+
+Temporary network errors, HTTP 5xx, and API rate limits also
+schedule another check, no earlier than the service's retry time. The next check is normally about one hour later.
+Invalid upstream data, an expired recorded Central token, and other blocks needing correction close the cycle. An
+already published snapshot inside the 60-day retention window closes it as an eligible skip.
+
+Every attempt appears as a cycle issue comment with check time, SHA, publisher and official run links, decision, next check,
+and each criterion's `Accepted`, `Rejected`, or `Not evaluated` status, observed value, and evidence. The final report
+repeats all criteria and explains why the SHA was published, skipped, or could not be published. For example:
+
+| Criterion               | Status        | Observed                         | Evidence                |
+| ----------------------- | ------------- | -------------------------------- | ----------------------- |
+| Qualification           | Accepted      | complete official provenance     | official commit link    |
+| Official main SHA       | Accepted      | exact 40-character SHA           | official commit link    |
+| Exact-SHA official CI   | Rejected      | failed job, step, observed error | official job link       |
+| Central token           | Accepted      | recorded expiry is valid         | publisher configuration |
+| Retention               | Not evaluated | CI not approved                  | no Central lookup       |
+| Publisher build         | Not evaluated | build not started                | publisher workflow link |
+| Deploy/public artifacts | Not evaluated | deploy not started               | publisher workflow link |
+
+Observations accumulate as each qualification stage finishes and are shared by success, retry, and definitive failure
+results. The official SHA is recorded immediately after validation; a full publication identity is available only
+after all provenance facts are obtained. A later failure preserves earlier approvals, rejects the blocking criterion
+with its observed error and evidence, and leaves unreached stages `Not evaluated`.
+
+For example, if Central returns HTTP 503 after provenance, exact-SHA CI, and token checks pass:
+
+| Criterion               | Status        | Observed                                                | Evidence                   |
+| ----------------------- | ------------- | ------------------------------------------------------- | -------------------------- |
+| Qualification           | Accepted      | complete official provenance                            | official commit link       |
+| Official main SHA       | Accepted      | exact 40-character SHA                                  | official commit link       |
+| Exact-SHA official CI   | Accepted      | completed successfully for exact SHA                    | official workflow run link |
+| Central token           | Accepted      | recorded expiry is valid                                | publisher configuration    |
+| Retention               | Rejected      | Central HTTP 503; retention eligibility remains unknown | public metadata URL        |
+| Publisher build         | Not evaluated | build not started                                       | publisher workflow link    |
+| Deploy/public artifacts | Not evaluated | deploy not started                                      | publisher workflow link    |
+
+The Central query failure rejects the evaluation, without claiming that the snapshot fails the retention policy.
+HTTP 503 and rate limits retain these observations and schedule a retry respecting the service deadline. Invalid
+Central metadata retains the same approvals but ends qualification definitively. An expired token leaves official
+CI and retention unassessed because cycle qualification checks the token before querying official CI.
+
+The issue body keeps the latest attempt and bounded cycle state; comments preserve the full attempt history. A comment
+mentions `@renanfranca` only when the SHA, blocker, or final outcome changes. The final issue is closed. A publisher build failure closes the cycle and creates or updates the separate
+`publisher-failure` issue. After a failed or ambiguous deploy, reporting probes public Central metadata and the POM,
+main JAR, and tests JAR, records what is publicly confirmed, and closes the cycle. It never sends the bundle again
+automatically after an ambiguous deploy.
+
+`retry-last-failed` remains a separate manual operation tied to the sole existing `publisher-failure` issue and its
+recorded immutable identity. Inspect the cycle report, public artifacts, and failure issue before using it. Repair a
+publisher or external cause first; do not treat a failed deploy as proof that Central received nothing. A successful
+manual retry can close the failure issue, but it does not restart or extend a closed cycle.
+
+GitHub Actions schedules can be delayed or dropped. A cycle issue confirms that a workflow run began; it cannot detect
+a cron that never ran. Use an independent monitor if missing scheduled starts must be detected.
+
+## Failure, retry, and token rotation
 
 A failure after qualification creates or updates one `[publisher] Seed4J main snapshot failure` issue with the
 `publisher-failure` label, assignment and mention for `@renanfranca`, the failed stage, workflow run, full upstream SHA,
@@ -125,7 +199,8 @@ candidate output, the independently reported qualifier job result creates that s
 failure instead of being mistaken for an expected skip. Captured diagnostic text is rendered inert: arbitrary account
 mentions and Markdown links cannot activate, while the issue template retains its explicit `@renanfranca` mention.
 
-Dispatch `retry-last-failed` only after correcting the trusted publisher or external outage. Retry refuses free-form
+Dispatch `retry-last-failed` only after correcting the trusted publisher or external outage and checking the cycle
+report and public artifacts. Retry refuses free-form
 SHAs and requires exactly one marked issue, re-fetches and re-derives the official identity, confirms reachability from
 official `main`, and again requires successful official CI. A successful retry or newer current publication closes the
 failure issue.
