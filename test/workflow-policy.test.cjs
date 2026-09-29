@@ -355,7 +355,7 @@ test("disabled daily and idle hourly runs do not emit token notifications", () =
   const workflow = read(".github/workflows/publish.yml");
   const rotation = job(workflow, "token-rotation");
 
-  assert.match(rotation, /needs: cycle/);
+  assert.match(rotation, /needs: \[cycle, qualify\]/);
   assert.match(rotation, /github\.event\.schedule != '41 \* \* \* \*'/);
   assert.match(
     rotation,
@@ -408,3 +408,136 @@ test("the workflow skip summary guides an ineligible manual retry to head", asyn
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("the token notice job condition follows the workflow admission matrix", () => {
+  const rotation = job(read(".github/workflows/publish.yml"), "token-rotation");
+  const cases = [
+    [
+      "retry without an issue",
+      {
+        eventName: "workflow_dispatch",
+        operation: "retry-last-failed",
+        outcome: "skip",
+        reason: "no-retryable-publication",
+      },
+      false,
+    ],
+    [
+      "retry without identity",
+      {
+        eventName: "workflow_dispatch",
+        operation: "retry-last-failed",
+        outcome: "skip",
+        reason: "no-retryable-publication",
+      },
+      false,
+    ],
+    [
+      "valid retry",
+      {
+        eventName: "workflow_dispatch",
+        operation: "retry-last-failed",
+        outcome: "publish",
+      },
+      true,
+    ],
+    [
+      "manual head",
+      {
+        eventName: "workflow_dispatch",
+        operation: "head",
+        cycleAction: "create",
+        outcome: "publish",
+      },
+      true,
+    ],
+    [
+      "joined head with qualification failure",
+      {
+        eventName: "workflow_dispatch",
+        operation: "head",
+        cycleAction: "join",
+        qualifyResult: "failure",
+      },
+      true,
+    ],
+    [
+      "retry with qualification failure and no outputs",
+      {
+        eventName: "workflow_dispatch",
+        operation: "retry-last-failed",
+        qualifyResult: "failure",
+      },
+      true,
+    ],
+    [
+      "cancelled workflow",
+      {
+        eventName: "workflow_dispatch",
+        operation: "head",
+        cycleAction: "create",
+        cancelled: true,
+      },
+      false,
+    ],
+    ["hourly cron", { schedule: "41 * * * *", cycleAction: "join" }, false],
+    ["disabled daily cron", { schedule: "17 6 * * 0,2-6" }, false],
+    [
+      "weekly scheduled head",
+      { schedule: "17 6 * * 1", cycleAction: "create" },
+      true,
+    ],
+    [
+      "daily enabled head",
+      { schedule: "17 6 * * 0,2-6", cycleAction: "create" },
+      true,
+    ],
+    [
+      "unrelated skip remains eligible",
+      {
+        eventName: "workflow_dispatch",
+        operation: "retry-last-failed",
+        outcome: "skip",
+        reason: "other-reason",
+      },
+      true,
+    ],
+  ];
+
+  assert.match(rotation, /^    needs: \[cycle, qualify\]$/m);
+  assert.match(rotation, /!cancelled\(\)/);
+  for (const [name, context, expected] of cases) {
+    assert.equal(tokenJobEligible(rotation, context), expected, name);
+  }
+});
+
+function tokenJobEligible(
+  rotation,
+  {
+    eventName = "schedule",
+    operation = "head",
+    schedule = "",
+    cycleAction = "none",
+    outcome = "",
+    reason = "",
+    qualifyResult = "success",
+    cancelled = false,
+  },
+) {
+  const { runInNewContext } = require("node:vm");
+  const condition = /^    if: (.+)$/m.exec(rotation)?.[1];
+  assert.ok(condition, "Token rotation job condition is missing");
+  return runInNewContext(
+    condition,
+    {
+      github: { event: { schedule }, event_name: eventName },
+      inputs: { operation },
+      needs: {
+        cycle: { outputs: { action: cycleAction } },
+        qualify: { result: qualifyResult, outputs: { outcome, reason } },
+      },
+      cancelled: () => cancelled,
+    },
+    { timeout: 1000 },
+  );
+}
