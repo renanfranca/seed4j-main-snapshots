@@ -5,6 +5,7 @@ const {
   encodeIdentity,
   identityFromFailureState,
   qualifyCandidate,
+  PARENT_ARTIFACT_ID,
   retentionDecision,
 } = require("./publisher-policy.cjs");
 const {
@@ -12,10 +13,14 @@ const {
   sanitizeDiagnostic,
   validatePublisherConfig,
 } = require("./operations-policy.cjs");
+const {
+  observePublicSnapshot,
+  snapshotMetadataUrl,
+} = require("./public-artifact-observation.cjs");
+const { value, xmlRoot } = require("./maven-xml.cjs");
 const { readPublisherConfig } = require("./publisher-config.cjs");
 
 const API_ROOT = "https://api.github.com";
-const CENTRAL_ROOT = "https://central.sonatype.com/repository/maven-snapshots";
 const OFFICIAL_REPOSITORY = "seed4j/seed4j";
 const PUBLISHER_REPOSITORY = "renanfranca/seed4j-main-snapshots";
 const WEEKLY_SCHEDULE = "17 6 * * 1";
@@ -82,6 +87,7 @@ async function qualifyPublication({
         evidence: `https://github.com/seed4j/seed4j/commit/${upstreamSha}`,
       };
       resolved = await resolveHeadCandidate(commitResponse, request);
+      if (resolved.outcome === "skip") return resolved;
     } else {
       resolved = await resolveRetryCandidate({ publisherRepository, request });
       if (resolved.outcome === "skip") return resolved;
@@ -165,22 +171,32 @@ async function qualifyPublication({
     );
     pending = {
       name: "Retention",
-      evidence: centralMetadataUrl(resolved.identity),
+      evidence: snapshotMetadataUrl(resolved.identity),
     };
+    const observedSnapshot = await observePublicSnapshot(
+      resolved.identity,
+      request,
+      { requireStatus },
+    );
     const retention = retentionDecision({
-      centralMetadata: await centralMetadata(resolved.identity, request),
-      identity: resolved.identity,
+      observedSnapshot,
       now: publisherTimestamp,
+      operation,
     });
     criteria = observeCriterion(
       criteria,
       pending.name,
       retention.outcome === "publish" ? "Accepted" : "Rejected",
-      retention.reason,
+      observedSnapshot.status === "partial"
+        ? `${retention.reason}. ${observedSnapshot.summary}`
+        : retention.reason,
       pending.evidence,
     );
     return Object.freeze({
-      ...(retention.outcome === "publish"
+      ...(retention.outcome === "publish" ||
+      retention.reason === "partial-snapshot-requires-retry" ||
+      (operation === "retry-last-failed" &&
+        retention.reason === "snapshot-published-within-60-days")
         ? { identity: resolved.identity }
         : {}),
       ...retention,
@@ -319,7 +335,8 @@ function scheduledPublicationDecision({ config, event, schedule }) {
 async function resolveHeadCandidate(commitResponse, request) {
   const upstreamSha = commitResponse.body?.sha;
   const upstreamCommitTimestamp = commitResponse.body?.commit?.committer?.date;
-  const upstreamPomVersion = await officialPomVersion(upstreamSha, request);
+  const coordinates = await officialPomCoordinates(upstreamSha, request);
+  if (coordinates.artifactId === "seed4j") return legacySnapshot(upstreamSha);
   const upstreamLicenseSha256 = await officialLicenseSha256(
     upstreamSha,
     request,
@@ -328,7 +345,7 @@ async function resolveHeadCandidate(commitResponse, request) {
     identity: deriveSnapshotIdentity({
       upstreamCommitTimestamp,
       upstreamLicenseSha256,
-      upstreamPomVersion,
+      ...coordinates,
       upstreamSha,
     }),
   });
@@ -356,14 +373,21 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
   if (!retryIssueBody.includes("seed4j-main-snapshot-publisher-failure-state:"))
     return noRetryablePublication();
   const recordedIdentity = identityFromFailureState(retryIssueBody);
+  if (recordedIdentity.artifactId !== PARENT_ARTIFACT_ID)
+    return legacySnapshot(recordedIdentity.upstreamSha);
   const commitResponse = await request(
     `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/commits/${recordedIdentity.upstreamSha}`,
   );
   requireStatus(commitResponse, 200, "recorded official upstream commit");
-  const upstreamPomVersion = await officialPomVersion(
+  const coordinates = await officialPomCoordinates(
     recordedIdentity.upstreamSha,
     request,
   );
+  if (coordinates.artifactId !== PARENT_ARTIFACT_ID) {
+    throw new Error(
+      "Recorded retry identity does not match re-fetched official upstream facts.",
+    );
+  }
   const upstreamLicenseSha256 = await officialLicenseSha256(
     recordedIdentity.upstreamSha,
     request,
@@ -371,7 +395,7 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
   const officialIdentity = deriveSnapshotIdentity({
     upstreamCommitTimestamp: commitResponse.body?.commit?.committer?.date,
     upstreamLicenseSha256,
-    upstreamPomVersion,
+    ...coordinates,
     upstreamSha: commitResponse.body?.sha,
   });
   if (encodeIdentity(officialIdentity) !== encodeIdentity(recordedIdentity)) {
@@ -393,6 +417,15 @@ async function resolveRetryCandidate({ publisherRepository, request }) {
   });
 }
 
+function legacySnapshot(upstreamSha) {
+  return Object.freeze({
+    openFailureIssue: false,
+    outcome: "skip",
+    reason: "legacy-snapshot-ineligible",
+    upstreamSha,
+  });
+}
+
 function noRetryablePublication() {
   return Object.freeze({
     openFailureIssue: false,
@@ -401,7 +434,7 @@ function noRetryablePublication() {
   });
 }
 
-async function officialPomVersion(upstreamSha, request) {
+async function officialPomCoordinates(upstreamSha, request) {
   const pomResponse = await request(
     `${API_ROOT}/repos/${OFFICIAL_REPOSITORY}/contents/pom.xml?ref=${upstreamSha}`,
   );
@@ -416,21 +449,20 @@ async function officialPomVersion(upstreamSha, request) {
     pomResponse.body.content.replace(/\s/g, ""),
     "base64",
   ).toString("utf8");
-  const metadata = /<\/parent>([\s\S]*?)<properties(?:\s|>)/.exec(pom)?.[1];
-  if (!metadata) {
-    throw new Error(
-      "Official upstream POM does not expose the expected top-level metadata.",
-    );
-  }
+  const project = xmlRoot(pom, "project");
+  const upstreamArtifact = value(project, "artifactId");
   if (
-    xmlValue(metadata, "groupId") !== "com.seed4j" ||
-    xmlValue(metadata, "artifactId") !== "seed4j"
+    value(project, "groupId") !== "com.seed4j" ||
+    !["seed4j", PARENT_ARTIFACT_ID].includes(upstreamArtifact)
   ) {
     throw new Error(
-      "Official upstream POM coordinates are not com.seed4j:seed4j.",
+      "Official upstream POM is outside the Seed4J coordinate allowlist.",
     );
   }
-  return xmlValue(metadata, "version");
+  return {
+    artifactId: upstreamArtifact,
+    upstreamPomVersion: value(project, "version"),
+  };
 }
 
 async function officialLicenseSha256(upstreamSha, request) {
@@ -451,18 +483,6 @@ async function officialLicenseSha256(upstreamSha, request) {
     "base64",
   );
   return createHash("sha256").update(license).digest("hex");
-}
-
-function xmlValue(fragment, element) {
-  const matches = [
-    ...fragment.matchAll(new RegExp(`<${element}>([^<]+)<\\/${element}>`, "g")),
-  ];
-  if (matches.length !== 1) {
-    throw new Error(
-      `Official upstream POM must contain exactly one top-level ${element}.`,
-    );
-  }
-  return matches[0][1].trim();
 }
 
 async function officialWorkflowCheck(upstreamSha, request) {
@@ -500,27 +520,6 @@ function requireUsableRecordedToken(recordedExpiry, now) {
   if (new Date(now).valueOf() > expiry.valueOf()) {
     throw new Error(`Recorded Central token expired on ${recordedExpiry}.`);
   }
-}
-
-function centralMetadataUrl(identity) {
-  const groupPath = identity.groupId.replaceAll(".", "/");
-  return `${CENTRAL_ROOT}/${groupPath}/${identity.artifactId}/${identity.version}/maven-metadata.xml`;
-}
-
-async function centralMetadata(identity, request) {
-  const response = await request(centralMetadataUrl(identity));
-  if (response.status === 404) {
-    return { status: 404 };
-  }
-  requireStatus(response, 200, "public Central snapshot metadata");
-  if (typeof response.body !== "string") {
-    throw new Error("Public Central snapshot metadata is not XML text.");
-  }
-  return {
-    lastUpdated: xmlValue(response.body, "lastUpdated"),
-    status: 200,
-    version: xmlValue(response.body, "version"),
-  };
 }
 
 function requireStatus(response, expectedStatus, label) {
@@ -686,7 +685,7 @@ function sanitizeExternalText(value) {
   return sanitizeDiagnostic(value).replace(/https?:\/\//gi, "https[:]//");
 }
 
-async function requestWithGitHubToken(url) {
+async function requestWithGitHubToken(url, method = "GET") {
   const logRequest = /\/actions\/jobs\/\d+\/logs$/.test(url);
   const headers = {
     Accept: url.startsWith(API_ROOT)
@@ -705,6 +704,8 @@ async function requestWithGitHubToken(url) {
   }
   let response = await fetchExternal(url, {
     headers,
+    method,
+    cache: "no-store",
     redirect: logRequest ? "manual" : "follow",
   });
   if (logRequest && response.status === 302) {

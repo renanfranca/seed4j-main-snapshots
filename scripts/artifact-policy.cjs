@@ -5,328 +5,207 @@ const {
   mkdirSync,
   readFileSync,
   readdirSync,
-  statSync,
   writeFileSync,
 } = require("node:fs");
 const { join } = require("node:path");
+const { isDeepStrictEqual } = require("node:util");
+const { child, value, xmlRoot } = require("./maven-xml.cjs");
+const { notice, provenance } = require("./prepare-upstream.cjs");
 const {
-  notice,
-  personalPomMetadata,
-  provenance,
-} = require("./prepare-upstream.cjs");
-const {
-  deriveSnapshotIdentity,
-  encodeIdentity,
-  requireDerivedIdentity,
-} = require("./publisher-policy.cjs");
+  artifactDefinitions,
+  CENTRAL_REPOSITORY,
+  JAR_MODULES,
+  PARENT_ARTIFACT_ID,
+} = require("./snapshot-layout.cjs");
+const { requireModularIdentity } = require("./publisher-policy.cjs");
 const { readZipEntry } = require("./zip-policy.cjs");
 
-const CENTRAL_SNAPSHOT_REPOSITORY =
-  "https://central.sonatype.com/repository/maven-snapshots/";
+const MANIFEST_FILE = "candidate-manifest.json";
 
 function collectCandidate({ checkoutDirectory, identity, outputDirectory }) {
+  requireModularIdentity(identity);
   mkdirSync(outputDirectory);
-  const prefix = `${identity.artifactId}-${identity.version}`;
-  copyFileSync(
-    join(checkoutDirectory, "pom.xml"),
-    join(outputDirectory, `${prefix}.pom`),
-  );
-  copyFileSync(
-    join(checkoutDirectory, "target", `${prefix}.jar`),
-    join(outputDirectory, `${prefix}.jar`),
-  );
-  copyFileSync(
-    join(checkoutDirectory, "target", `${prefix}-tests.jar`),
-    join(outputDirectory, `${prefix}-tests.jar`),
-  );
+  for (const { artifactId, extension, fileName } of artifactDefinitions(
+    identity,
+  )) {
+    const module =
+      artifactId === PARENT_ARTIFACT_ID
+        ? checkoutDirectory
+        : join(checkoutDirectory, artifactId);
+    const source =
+      extension === "pom"
+        ? join(module, "pom.xml")
+        : join(module, "target", fileName);
+    copyFileSync(source, join(outputDirectory, fileName));
+  }
   const manifest = createCandidateManifest({
     candidateDirectory: outputDirectory,
     identity,
   });
   writeFileSync(
-    join(outputDirectory, "candidate-manifest.json"),
+    join(outputDirectory, MANIFEST_FILE),
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
+  return verifyCandidateBundle(outputDirectory, identity);
+}
+
+function createCandidateManifest({ candidateDirectory: directory, identity }) {
+  requireModularIdentity(identity);
+  requireExactBundle(
+    directory,
+    artifactDefinitions(identity).map(({ fileName }) => fileName),
+  );
+  return manifestFromFiles(directory, identity);
+}
+
+function verifyCandidateBundle(directory, identity) {
+  requireModularIdentity(identity);
+  const definitions = artifactDefinitions(identity);
+  requireExactBundle(directory, [
+    MANIFEST_FILE,
+    ...definitions.map(({ fileName }) => fileName),
+  ]);
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(directory, MANIFEST_FILE), "utf8"));
+  } catch {
+    throw new Error("Candidate manifest is not valid JSON.");
+  }
+  if (!isDeepStrictEqual(manifest, manifestFromFiles(directory, identity))) {
+    throw new Error(
+      "Candidate manifest does not match the trusted coordinates and integrity of exactly five POMs and four JARs.",
+    );
+  }
+  for (const artifact of definitions) {
+    if (artifact.extension === "pom")
+      requireReactorPom(directory, identity, artifact);
+    else requireReactorJar(directory, identity, artifact);
+  }
   return manifest;
 }
 
-function createCandidateManifest({ candidateDirectory, identity }) {
-  const expectedArtifacts = artifactDefinitions(identity);
-  requireExactArtifactSet(candidateDirectory, expectedArtifacts);
-  const artifacts = expectedArtifacts.map(({ fileName, role }) => {
-    const path = join(candidateDirectory, fileName);
-    const content = readFileSync(path);
-    return Object.freeze({
-      fileName,
-      role,
-      sha256: createHash("sha256").update(content).digest("hex"),
-      size: statSync(path).size,
-    });
-  });
+function requireExactBundle(directory, expectedFiles) {
+  const actual = readdirSync(directory);
+  const extra = actual.filter((name) => !expectedFiles.includes(name));
+  const missing = expectedFiles.filter((name) => !actual.includes(name));
+  if (extra.length)
+    throw new Error(`Unexpected bundle files: ${extra.join(", ")}.`);
+  if (missing.length)
+    throw new Error(`Missing bundle files: ${missing.join(", ")}.`);
+  for (const name of expectedFiles) {
+    if (!lstatSync(join(directory, name)).isFile()) {
+      throw new Error(
+        `Candidate bundle entry '${name}' is not a regular file.`,
+      );
+    }
+  }
+}
 
-  return Object.freeze({
-    artifacts,
-    publication: Object.freeze({
-      artifactId: identity.artifactId,
-      groupId: identity.groupId,
-      repositoryUrl: CENTRAL_SNAPSHOT_REPOSITORY,
-      version: identity.version,
+function manifestFromFiles(directory, identity) {
+  return {
+    artifacts: artifactDefinitions(identity).map((artifact) => {
+      const data = readFileSync(join(directory, artifact.fileName));
+      return { ...artifact, sha256: hash(data), size: data.length };
     }),
-    schemaVersion: 1,
-    upstream: Object.freeze({
+    publication: {
+      groupId: identity.groupId,
+      repositoryUrl: CENTRAL_REPOSITORY,
+      version: identity.version,
+    },
+    schemaVersion: 2,
+    upstream: {
       commitTimestamp: identity.upstreamCommitTimestamp,
       licenseSha256: identity.upstreamLicenseSha256,
       pomVersion: identity.upstreamPomVersion,
       sha: identity.upstreamSha,
-    }),
-  });
+    },
+  };
 }
 
-function requireExactArtifactSet(candidateDirectory, expectedArtifacts) {
-  const expectedFileNames = new Set(
-    expectedArtifacts.map((artifact) => artifact.fileName),
-  );
-  const actualFileNames = readdirSync(candidateDirectory).sort();
-  const unexpected = actualFileNames.filter(
-    (fileName) => !expectedFileNames.has(fileName),
-  );
-  if (unexpected.length > 0) {
-    throw new Error(`Unexpected candidate artifacts: ${unexpected.join(", ")}`);
-  }
-  const missing = [...expectedFileNames].filter(
-    (fileName) => !actualFileNames.includes(fileName),
-  );
-  if (missing.length > 0) {
-    throw new Error(`Missing candidate artifacts: ${missing.join(", ")}`);
-  }
+function hash(data) {
+  return createHash("sha256").update(data).digest("hex");
 }
 
-function artifactDefinitions(identity) {
-  const prefix = `${identity.artifactId}-${identity.version}`;
-  return [
-    { fileName: `${prefix}.pom`, role: "pom" },
-    { fileName: `${prefix}.jar`, role: "main" },
-    { fileName: `${prefix}-tests.jar`, role: "tests" },
-  ];
-}
-
-function verifyCandidateBundle(bundleDirectory, expectedIdentity) {
-  const trustedIdentity = requireDerivedIdentity(expectedIdentity);
-  requireRegularFile(join(bundleDirectory, "candidate-manifest.json"));
-  let manifest;
-  try {
-    manifest = JSON.parse(
-      readFileSync(join(bundleDirectory, "candidate-manifest.json"), "utf8"),
-    );
-  } catch (_) {
-    throw new Error("Candidate manifest is missing or is not valid JSON.");
-  }
-  const identity = requireValidManifest(manifest);
-  if (encodeIdentity(identity) !== encodeIdentity(trustedIdentity)) {
-    throw new Error(
-      "Candidate manifest does not match the trusted qualified identity.",
-    );
-  }
-  requirePublicationPom({ bundleDirectory, identity, manifest });
-  const expectedFileNames = new Set([
-    "candidate-manifest.json",
-    ...manifest.artifacts.map((artifact) => artifact.fileName),
-  ]);
-  const actualFileNames = readdirSync(bundleDirectory).sort();
-  const unexpected = actualFileNames.filter(
-    (fileName) => !expectedFileNames.has(fileName),
+function requireReactorPom(directory, identity, { artifactId, fileName }) {
+  const pom = xmlRoot(
+    readFileSync(join(directory, fileName), "utf8"),
+    "project",
   );
-  if (unexpected.length > 0) {
-    throw new Error(`Unexpected bundle files: ${unexpected.join(", ")}`);
-  }
-  const missing = [...expectedFileNames].filter(
-    (fileName) => !actualFileNames.includes(fileName),
-  );
-  if (missing.length > 0) {
-    throw new Error(`Missing bundle files: ${missing.join(", ")}`);
-  }
-  for (const artifact of manifest.artifacts) {
-    const path = join(bundleDirectory, artifact.fileName);
-    requireRegularFile(path);
-    const content = readFileSync(path);
-    const actualHash = createHash("sha256").update(content).digest("hex");
-    if (actualHash !== artifact.sha256) {
-      throw new Error(
-        `SHA-256 mismatch for ${artifact.role} artifact '${artifact.fileName}'.`,
-      );
-    }
-    if (statSync(path).size !== artifact.size) {
-      throw new Error(
-        `Size mismatch for ${artifact.role} artifact '${artifact.fileName}'.`,
-      );
-    }
-  }
-  requireEmbeddedPublicationMetadata({ bundleDirectory, identity, manifest });
-  return manifest;
-}
-
-function requireRegularFile(path) {
-  let regularFile = false;
-  try {
-    regularFile = lstatSync(path).isFile();
-  } catch (_) {
-    throw new Error(
-      `Candidate bundle entry '${path}' is missing or is not a regular file.`,
-    );
-  }
-  if (!regularFile) {
-    throw new Error(`Candidate bundle entry '${path}' is not a regular file.`);
-  }
-}
-
-function requireValidManifest(manifest) {
-  requireKeys(
-    manifest,
-    ["artifacts", "publication", "schemaVersion", "upstream"],
-    "manifest",
-  );
-  if (manifest.schemaVersion !== 1) {
-    throw new Error(
-      `Candidate manifest schema version '${manifest.schemaVersion}' is not supported.`,
-    );
-  }
-  requireKeys(
-    manifest.publication,
-    ["artifactId", "groupId", "repositoryUrl", "version"],
-    "manifest publication",
-  );
-  requireKeys(
-    manifest.upstream,
-    ["commitTimestamp", "licenseSha256", "pomVersion", "sha"],
-    "manifest upstream",
-  );
-  const identity = deriveSnapshotIdentity({
-    upstreamCommitTimestamp: manifest.upstream.commitTimestamp,
-    upstreamLicenseSha256: manifest.upstream.licenseSha256,
-    upstreamPomVersion: manifest.upstream.pomVersion,
-    upstreamSha: manifest.upstream.sha,
-  });
+  const parent = child(pom, "parent");
+  const root = artifactId === PARENT_ARTIFACT_ID;
   if (
-    manifest.publication.groupId !== identity.groupId ||
-    manifest.publication.artifactId !== identity.artifactId ||
-    manifest.publication.version !== identity.version ||
-    manifest.publication.repositoryUrl !== CENTRAL_SNAPSHOT_REPOSITORY
+    value(pom, "artifactId") !== artifactId ||
+    (value(pom, "packaging") ?? "jar") !== (root ? "pom" : "jar") ||
+    (value(pom, "groupId") ?? value(parent, "groupId")) !== identity.groupId ||
+    (value(pom, "version") ?? value(parent, "version")) !== identity.version ||
+    (!root &&
+      (value(parent, "groupId") !== identity.groupId ||
+        value(parent, "artifactId") !== PARENT_ARTIFACT_ID ||
+        value(parent, "version") !== identity.version))
   ) {
     throw new Error(
-      "Candidate manifest publication identity is outside the personal snapshot allowlist.",
+      `Candidate POM coordinates do not match the qualified reactor: ${artifactId}.`,
     );
   }
-  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== 3) {
-    throw new Error("Candidate manifest must declare exactly three artifacts.");
-  }
-  const expectedArtifacts = artifactDefinitions(identity);
-  for (let index = 0; index < expectedArtifacts.length; index++) {
-    const artifact = manifest.artifacts[index];
-    requireKeys(
-      artifact,
-      ["fileName", "role", "sha256", "size"],
-      `manifest artifact ${index}`,
-    );
+  for (const group of Array.from(pom.getElementsByTagName("groupId"))) {
+    const coordinate = group.parentNode;
+    const groupId = group.textContent.trim();
+    const version = value(coordinate, "version");
     if (
-      artifact.fileName !== expectedArtifacts[index].fileName ||
-      artifact.role !== expectedArtifacts[index].role
+      groupId === "com.seed4j" ||
+      (groupId === identity.groupId &&
+        (![PARENT_ARTIFACT_ID, ...JAR_MODULES].includes(
+          value(coordinate, "artifactId"),
+        ) ||
+          (version !== undefined && version !== identity.version)))
     ) {
       throw new Error(
-        `Candidate manifest artifact ${index} is outside the filename and classifier allowlist.`,
-      );
-    }
-    if (
-      !Number.isSafeInteger(artifact.size) ||
-      artifact.size < 0 ||
-      !/^[0-9a-f]{64}$/.test(artifact.sha256 ?? "")
-    ) {
-      throw new Error(
-        `Candidate manifest artifact ${index} has invalid integrity fields.`,
+        `Candidate POM contains an invalid internal coordinate: ${artifactId}.`,
       );
     }
   }
-  return identity;
+  if (root) {
+    const license = child(child(pom, "licenses"), "license");
+    const scm = child(pom, "scm");
+    if (
+      value(license, "name") !== "Apache License, version 2.0" ||
+      value(license, "url") !==
+        `https://github.com/seed4j/seed4j/blob/${identity.upstreamSha}/LICENSE.txt` ||
+      value(scm, "tag") !== identity.upstreamSha ||
+      value(scm, "url") !==
+        `https://github.com/seed4j/seed4j/tree/${identity.upstreamSha}` ||
+      value(
+        child(child(pom, "distributionManagement"), "snapshotRepository"),
+        "url",
+      ) !== CENTRAL_REPOSITORY
+    ) {
+      throw new Error(
+        "Candidate parent POM license or provenance does not match the qualified reactor.",
+      );
+    }
+  }
 }
 
-function requirePublicationPom({ bundleDirectory, identity, manifest }) {
-  const pomArtifact = manifest.artifacts.find(
-    (artifact) => artifact.role === "pom",
-  );
-  const pomPath = join(bundleDirectory, pomArtifact.fileName);
-  requireRegularFile(pomPath);
-  const pom = readFileSync(pomPath, "utf8");
-  if (/<!DOCTYPE|<!ENTITY/i.test(pom)) {
+function requireReactorJar(directory, identity, { artifactId, fileName }) {
+  const path = join(directory, fileName);
+  const embedded = (name) => readZipEntry(path, `META-INF/${name}`);
+  if (
+    embedded("seed4j-main-snapshot.properties").toString("utf8") !==
+    provenance(identity, artifactId)
+  ) {
     throw new Error(
-      "Candidate published POM must not contain a document type or entity declaration.",
-    );
-  }
-  const metadata = /<\/parent>\s*([\s\S]*?)<properties(?:\s|>)/.exec(pom)?.[1];
-  if (!metadata || metadata.trim() !== personalPomMetadata(identity).trim()) {
-    throw new Error(
-      "Candidate published POM nonofficial publication metadata does not match the trusted policy.",
-    );
-  }
-}
-
-function requireEmbeddedPublicationMetadata({
-  bundleDirectory,
-  identity,
-  manifest,
-}) {
-  const mainArtifact = manifest.artifacts.find(
-    (artifact) => artifact.role === "main",
-  );
-  const mainJar = join(bundleDirectory, mainArtifact.fileName);
-  let embeddedProvenance;
-  try {
-    embeddedProvenance = readZipEntry(
-      mainJar,
-      "META-INF/seed4j-main-snapshot.properties",
-    );
-  } catch (error) {
-    throw new Error(
-      `Main JAR embedded provenance is invalid: ${error.message}`,
-    );
-  }
-  if (embeddedProvenance.toString("utf8") !== provenance(identity)) {
-    throw new Error(
-      "Main JAR embedded provenance does not match the trusted qualified identity.",
-    );
-  }
-  let embeddedLicense;
-  let embeddedNotice;
-  try {
-    embeddedLicense = readZipEntry(
-      mainJar,
-      "META-INF/LICENSE-seed4j-main-snapshot.txt",
-    );
-    embeddedNotice = readZipEntry(
-      mainJar,
-      "META-INF/NOTICE-seed4j-main-snapshot.txt",
-    );
-  } catch (error) {
-    throw new Error(
-      `Main JAR embedded legal metadata is invalid: ${error.message}`,
+      `Candidate JAR embedded provenance does not match the qualified reactor: ${artifactId}.`,
     );
   }
   if (
-    createHash("sha256").update(embeddedLicense).digest("hex") !==
+    hash(embedded("LICENSE-seed4j-main-snapshot.txt")) !==
       identity.upstreamLicenseSha256 ||
-    embeddedNotice.toString("utf8") !== notice(identity)
+    embedded("NOTICE-seed4j-main-snapshot.txt").toString("utf8") !==
+      notice(identity)
   ) {
     throw new Error(
-      "Main JAR embedded legal metadata does not match the trusted qualified facts.",
+      `Candidate JAR embedded legal metadata does not match the qualified reactor: ${artifactId}.`,
     );
-  }
-}
-
-function requireKeys(value, expectedKeys, label) {
-  if (
-    !value ||
-    Array.isArray(value) ||
-    Object.keys(value).sort().join("\n") !== [...expectedKeys].sort().join("\n")
-  ) {
-    throw new Error(`Candidate ${label} fields do not match the allowlist.`);
   }
 }
 

@@ -33,7 +33,7 @@ test("qualifies official main head through the exact workflow and public Central
 
   assert.deepEqual(result, {
     identity: {
-      artifactId: "seed4j-main-snapshot",
+      artifactId: "seed4j-parent",
       groupId: "io.github.renanfranca",
       upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
       upstreamLicenseSha256:
@@ -138,7 +138,7 @@ test("invalid publisher runtime time fails before token and retention policies",
   );
   assert.equal(result.identity.upstreamSha, sha);
   assert.equal(result.upstreamSha, sha);
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 5);
 });
 
 test("retry reads the sole marked failure, verifies official facts and reachability, and reuses its identity", async () => {
@@ -168,7 +168,7 @@ test("retry reads the sole marked failure, verifies official facts and reachabil
       200,
       workflowRuns("success"),
     ],
-    [/central\.sonatype\.com.*maven-metadata\.xml$/, 404, ""],
+    ...absentSnapshotRequests(),
   ];
 
   const result = await qualifyPublication({
@@ -183,6 +183,36 @@ test("retry reads the sole marked failure, verifies official facts and reachabil
 
   assert.equal(result.outcome, "publish");
   assert.equal(result.identity.upstreamSha, sha);
+  assert.equal(requests.length, 0);
+});
+
+test("a recorded monolithic failure is ineligible before consulting upstream or Central", async () => {
+  const requests = [
+    [
+      /\/issues\?/,
+      200,
+      [
+        {
+          body: retryIdentityBody("seed4j-main-snapshot"),
+          title: "[publisher] Seed4J main snapshot failure",
+        },
+      ],
+    ],
+  ];
+
+  const result = await qualifyPublication({
+    config: baseConfig,
+    event: "workflow_dispatch",
+    now: "2026-09-11T12:00:00Z",
+    operation: "retry-last-failed",
+    publisherRepository: "renanfranca/seed4j-main-snapshots",
+    ref: "refs/heads/main",
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "skip");
+  assert.equal(result.reason, "legacy-snapshot-ineligible");
+  assert.equal(result.upstreamSha, sha);
   assert.equal(requests.length, 0);
 });
 
@@ -242,16 +272,34 @@ function officialHeadRequests({ centralStatus, workflowConclusion }) {
     ],
     ...(centralStatus === undefined
       ? []
-      : [[/central\.sonatype\.com.*maven-metadata\.xml$/, centralStatus, ""]]),
+      : centralStatus === 404
+        ? absentSnapshotRequests()
+        : [
+            [/central\.sonatype\.com.*maven-metadata\.xml$/, centralStatus, ""],
+          ]),
   ];
+}
+
+function absentSnapshotRequests() {
+  return [
+    "seed4j-parent",
+    "seed4j-api",
+    "seed4j-engine",
+    "seed4j-test",
+    "seed4j-core-modules",
+  ].map((artifact) => [
+    new RegExp(`/${artifact}/[^/]+/maven-metadata\\.xml$`),
+    404,
+    "",
+  ]);
 }
 
 function commit() {
   return { commit: { committer: { date: "2026-09-07T05:58:00Z" } }, sha };
 }
 
-function pomContent() {
-  const pom = `<project><parent><version>4.0.6</version></parent><groupId>com.seed4j</groupId><artifactId>seed4j</artifactId><version>2.2.1-SNAPSHOT</version><properties /></project>`;
+function pomContent(artifactId = "seed4j-parent") {
+  const pom = `<project><parent><version>4.0.6</version></parent><groupId>com.seed4j</groupId><artifactId>${artifactId}</artifactId><version>2.2.1-SNAPSHOT</version><properties /></project>`;
   return { content: Buffer.from(pom).toString("base64"), encoding: "base64" };
 }
 
@@ -1061,7 +1109,7 @@ test("invalid Central metadata preserves approvals but ends qualification defini
   );
   assert.match(
     result.assessment.criteria[4].observed,
-    /not XML.*eligibility remains unknown/,
+    /Invalid metadata XML.*eligibility remains unknown/,
   );
 });
 
@@ -1224,7 +1272,7 @@ test("cycle reports render preserved approvals, the Central blocker, and unperfo
   }
   assert.equal(comments.length, 2);
   assert.match(comments[0], /Retention \| Rejected \| .*503/);
-  assert.match(comments[1], /Retention \| Rejected \| .*not XML/);
+  assert.match(comments[1], /Retention \| Rejected \| .*Invalid metadata XML/);
   assert.match(issueBody, /Final report/);
   assert.equal(closed, true);
 });
@@ -1301,11 +1349,11 @@ test("invalid failure-issue API data remains an error rather than an empty retry
   assert.equal(requests.length, 0);
 });
 
-function retryIdentityBody() {
+function retryIdentityBody(artifactId = "seed4j-parent") {
   return `<!-- seed4j-main-snapshot-publisher-failure-state:start -->
 \`\`\`json
 {
-  "artifactId": "seed4j-main-snapshot",
+  "artifactId": "${artifactId}",
   "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
   "groupId": "io.github.renanfranca",
   "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
@@ -1326,7 +1374,7 @@ test("recorded retry identity corruption remains a failure before any upstream r
       '"upstreamSha": "invalid"',
     ),
     retryIdentityBody().replace(
-      '"artifactId": "seed4j-main-snapshot"',
+      '"artifactId": "seed4j-parent"',
       '"artifactId": "other"',
     ),
     retryIdentityBody() + retryIdentityBody(),
@@ -1460,5 +1508,157 @@ test("retry provenance mismatches remain failures on the recorded SHA", async ()
     result.reason,
     /does not match re-fetched official upstream facts/,
   );
+  assert.equal(requests.length, 0);
+});
+
+test("uses the oldest confirmed file of a complete modular publication for retention", async () => {
+  const expected = [
+    ["seed4j-parent", ["pom"]],
+    ["seed4j-api", ["pom", "jar"]],
+    ["seed4j-engine", ["pom", "jar"]],
+    ["seed4j-test", ["pom", "jar"]],
+    ["seed4j-core-modules", ["pom", "jar"]],
+  ];
+  const requests = officialHeadRequests({ workflowConclusion: "success" });
+  const observed = [];
+  const upstream = queuedRequest(requests);
+  const version =
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT";
+  const request = async (url, method) => {
+    if (!url.includes("central.sonatype.com")) return upstream(url);
+    const [, artifactId] = /\/([^/]+)\/[^/]+\/[^/]+$/.exec(url);
+    const extensions = expected.find(([module]) => module === artifactId)[1];
+    if (method === "HEAD") {
+      observed.push([artifactId, url.split(".").at(-1)]);
+      return { status: 200 };
+    }
+    return {
+      status: 200,
+      body: snapshotMetadata({
+        artifactId,
+        extensions,
+        version,
+        updated:
+          artifactId === "seed4j-api" ? "20260910000000" : "20260920000000",
+      }),
+    };
+  };
+
+  const result = await qualifyPublication({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    now: "2026-11-08T00:00:00Z",
+    request,
+  });
+
+  assert.equal(result.outcome, "skip");
+  assert.equal(result.reason, "snapshot-published-within-60-days");
+  assert.deepEqual(
+    observed,
+    expected.flatMap(([module, extensions]) =>
+      extensions.map((extension) => [module, extension]),
+    ),
+  );
+  const refreshUpstream = queuedRequest(
+    officialHeadRequests({ workflowConclusion: "success" }),
+  );
+  const elapsed = await qualifyPublication({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    now: "2026-11-09T00:00:00Z",
+    request: async (url, method) =>
+      url.includes("central.sonatype.com")
+        ? request(url, method)
+        : refreshUpstream(url),
+  });
+  assert.equal(elapsed.reason, "retention-refresh");
+
+  function snapshotMetadata({ artifactId, extensions, version, updated }) {
+    const timestamp = updated.slice(0, 8) + "." + updated.slice(8);
+    return `<metadata><groupId>io.github.renanfranca</groupId><artifactId>${artifactId}</artifactId><version>${version}</version><versioning><snapshotVersions>${extensions.map((extension) => `<snapshotVersion><extension>${extension}</extension><value>${version.replace("SNAPSHOT", timestamp + "-1")}</value><updated>${updated}</updated></snapshotVersion>`).join("")}</snapshotVersions><lastUpdated>20261101000000</lastUpdated></versioning></metadata>`;
+  }
+});
+
+test("reserves a partial snapshot for a retry of its recorded SHA after a fresh public check", async () => {
+  const version =
+    "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT";
+  const parentArtifact = `seed4j-parent-${version.replace("SNAPSHOT", "20260928.100000-1")}.pom`;
+  const parentMetadata = `<metadata><groupId>io.github.renanfranca</groupId><artifactId>seed4j-parent</artifactId><version>${version}</version><versioning><snapshotVersions><snapshotVersion><extension>pom</extension><value>${version.replace("SNAPSHOT", "20260928.100000-1")}</value><updated>20260928100000</updated></snapshotVersion></snapshotVersions></versioning></metadata>`;
+  const publicCalls = [];
+  const requestPublic = (requestUpstream) => async (url, method) => {
+    if (!url.includes("central.sonatype.com")) return requestUpstream(url);
+    publicCalls.push({ url, method });
+    if (url.endsWith(parentArtifact)) return { status: 200 };
+    if (url.includes("/seed4j-parent/"))
+      return { status: 200, body: parentMetadata };
+    return { status: 404 };
+  };
+
+  const headRequests = officialHeadRequests({ workflowConclusion: "success" });
+  const head = await qualifyPublication({
+    ...cycleInvocation(),
+    request: requestPublic(queuedRequest(headRequests)),
+  });
+
+  assert.equal(head.outcome, "skip");
+  assert.equal(head.reason, "partial-snapshot-requires-retry");
+  assert.equal(head.identity.upstreamSha, sha);
+  assert.match(
+    head.assessment.criteria.at(-1).observed,
+    /Public files 1\/9: seed4j-parent.pom/,
+  );
+  assert.equal(headRequests.length, 0);
+  assert.equal(publicCalls.length, 6);
+
+  const retryRequests = [
+    [
+      /\/issues\?/,
+      200,
+      [
+        {
+          body: retryIdentityBody(),
+          title: "[publisher] Seed4J main snapshot failure",
+        },
+      ],
+    ],
+    [`/repos/seed4j/seed4j/commits/${sha}`, 200, commit()],
+    ...officialHeadRequests({ workflowConclusion: "success" }).slice(1, 3),
+    [`/repos/seed4j/seed4j/compare/${sha}...main`, 200, { status: "ahead" }],
+    ...officialHeadRequests({ workflowConclusion: "success" }).slice(3),
+  ];
+  const retry = await qualifyPublication({
+    ...cycleInvocation(),
+    event: "workflow_dispatch",
+    cycleIssueNumber: undefined,
+    operation: "retry-last-failed",
+    request: requestPublic(queuedRequest(retryRequests)),
+  });
+
+  assert.equal(retry.outcome, "publish");
+  assert.equal(retry.reason, "partial-snapshot-retry");
+  assert.equal(retry.identity.upstreamSha, sha);
+  assert.equal(retryRequests.length, 0);
+  assert.equal(publicCalls.length, 12);
+  assert.ok(publicCalls.every(({ url }) => url.includes(`/${version}/`)));
+});
+
+test("a monolithic main POM is ineligible before build even when head is requested", async () => {
+  const requests = [
+    ["/repos/seed4j/seed4j/commits/main", 200, commit()],
+    [
+      `/repos/seed4j/seed4j/contents/pom.xml?ref=${sha}`,
+      200,
+      pomContent("seed4j"),
+    ],
+  ];
+
+  const result = await qualifyPublication({
+    ...cycleInvocation(),
+    request: queuedRequest(requests),
+  });
+
+  assert.equal(result.outcome, "skip");
+  assert.equal(result.reason, "legacy-snapshot-ineligible");
+  assert.equal(result.upstreamSha, sha);
   assert.equal(requests.length, 0);
 });

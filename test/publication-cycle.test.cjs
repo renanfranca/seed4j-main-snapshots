@@ -300,7 +300,7 @@ test("a failed deploy closes the cycle after recording public artifact observati
   const { renderIssue } = require("../scripts/publication-cycle.cjs");
   const { encodeIdentity } = require("../scripts/publisher-policy.cjs");
   const identity = {
-    artifactId: "seed4j-main-snapshot",
+    artifactId: "seed4j-parent",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
     upstreamLicenseSha256:
@@ -330,12 +330,12 @@ test("a failed deploy closes the cycle after recording public artifact observati
   };
   const publicRequest = async (url, method) => {
     publicCalls.push({ url, method });
-    return url.endsWith("maven-metadata.xml")
-      ? {
-          status: 200,
-          body: `<metadata><versioning><snapshotVersions><snapshotVersion><extension>pom</extension><value>2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-20260928.100000-1</value></snapshotVersion><snapshotVersion><extension>jar</extension><value>2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-20260928.100000-1</value></snapshotVersion><snapshotVersion><classifier>tests</classifier><extension>jar</extension><value>2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-20260928.100000-1</value></snapshotVersion></snapshotVersions></versioning></metadata>`,
-        }
-      : { status: url.includes("-tests.jar") ? 404 : 200 };
+    if (method === "HEAD") return { status: 200 };
+    if (!url.includes("/seed4j-parent/")) return { status: 404 };
+    return {
+      status: 200,
+      body: `<metadata><groupId>io.github.renanfranca</groupId><artifactId>seed4j-parent</artifactId><version>${identity.version}</version><versioning><snapshotVersions><snapshotVersion><extension>pom</extension><value>${identity.version.replace("SNAPSHOT", "20260928.100000-1")}</value><updated>20260928100000</updated></snapshotVersion></snapshotVersions></versioning></metadata>`,
+    };
   };
 
   const result = await completeCycle({
@@ -356,11 +356,8 @@ test("a failed deploy closes the cycle after recording public artifact observati
   });
 
   assert.equal(result.action, "deployment-unconfirmed");
-  assert.equal(publicCalls.length, 4);
-  assert.match(issueBody, /POM confirmed/);
-  assert.match(issueBody, /main JAR confirmed/);
-  assert.match(issueBody, /tests JAR unconfirmed/);
-  assert.match(issueBody, /manual inspection/i);
+  assert.equal(publicCalls.length, 6);
+  assert.match(issueBody, /Public files 1\/9: seed4j-parent.pom/);
 });
 
 test("manual head after an expired cycle closes it and starts a fresh 48-hour cycle", async () => {

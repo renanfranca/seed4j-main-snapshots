@@ -1,3 +1,7 @@
+const {
+  inspectPublicArtifacts,
+  fetchPublic,
+} = require("./public-artifact-observation.cjs");
 const { decodeIdentity } = require("./publisher-policy.cjs");
 const {
   canonicalPublisherTimestamp,
@@ -18,6 +22,7 @@ async function reportPublisherResult({
   now,
   outcome,
   qualifyResult,
+  publicRequest = fetchPublic,
   reason,
   repository,
   request,
@@ -28,7 +33,12 @@ async function reportPublisherResult({
     qualifyResult,
     reason,
   });
-  if (qualification.outcome === "skip") {
+  const partial = qualification.reason === "partial-snapshot-requires-retry";
+  const alreadyConfirmed =
+    qualification.outcome === "skip" &&
+    qualification.reason === "snapshot-published-within-60-days" &&
+    Boolean(encodedIdentity);
+  if (qualification.outcome === "skip" && !partial && !alreadyConfirmed) {
     return Object.freeze({ action: "none", reason: "expected-skip" });
   }
   if (repository !== PUBLISHER_REPOSITORY) {
@@ -41,9 +51,10 @@ async function reportPublisherResult({
     : undefined;
   const issue = await openFailureIssue(repository, request);
   if (
-    outcome === "publish" &&
-    buildResult === "success" &&
-    deployResult === "success"
+    alreadyConfirmed ||
+    (outcome === "publish" &&
+      buildResult === "success" &&
+      deployResult === "success")
   ) {
     if (!identity) {
       throw new Error(
@@ -79,23 +90,32 @@ async function reportPublisherResult({
     return Object.freeze({ action: "close", issueNumber: issue.number });
   }
 
-  const stage = failureStage({
-    buildResult,
-    outcome: qualification.outcome,
-  });
+  const stage = partial
+    ? "deploy"
+    : failureStage({
+        buildResult,
+        outcome: qualification.outcome,
+      });
+  const publicObservation =
+    stage === "deploy" && identity
+      ? await inspectPublicArtifacts(identity, publicRequest)
+      : undefined;
   const result = failureIssueUpdate({
     existingBody: issue?.body,
     failure: {
-      diagnostic: failureDiagnostic({
-        buildDiagnostic,
-        buildResult,
-        deployDiagnostic,
-        deployResult,
-        outcome: qualification.outcome,
-        reason: qualification.reason,
-        stage,
-      }),
+      diagnostic: partial
+        ? "A partial publication requires an explicit retry."
+        : failureDiagnostic({
+            buildDiagnostic,
+            buildResult,
+            deployDiagnostic,
+            deployResult,
+            outcome: qualification.outcome,
+            reason: qualification.reason,
+            stage,
+          }),
       failedAt: canonicalPublisherTimestamp(now),
+      publicObservation: publicObservation?.summary,
       identity,
       stage,
       workflowRunUrl,

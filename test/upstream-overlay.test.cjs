@@ -12,117 +12,86 @@ const test = require("node:test");
 
 const {
   decodeIdentity,
+  deriveSnapshotIdentity,
   encodeIdentity,
 } = require("../scripts/publisher-policy.cjs");
 const { prepareUpstream } = require("../scripts/prepare-upstream.cjs");
 
-test("applies only personal publication metadata and immutable provenance to an exact upstream checkout", () => {
-  const checkout = mkdtempSync(join(tmpdir(), "seed4j-upstream-"));
-  mkdirSync(join(checkout, "src/main/java"), { recursive: true });
-  writeFileSync(join(checkout, "pom.xml"), upstreamPom());
-  writeFileSync(
-    join(checkout, "package.json"),
-    '{"name":"seed4j","version":"2.2.1-SNAPSHOT"}\n',
-  );
-  writeFileSync(join(checkout, "LICENSE.txt"), "upstream Apache license\n");
-  writeFileSync(
-    join(checkout, "src/main/java/App.java"),
-    "final class App {}\n",
-  );
-  const identity = {
-    artifactId: "seed4j-main-snapshot",
-    groupId: "io.github.renanfranca",
+test("rewrites the reactor parent and intermodule coordinates while preserving the server and package scripts", (context) => {
+  const checkout = mkdtempSync(join(tmpdir(), "seed4j-reactor-"));
+  context.after(() => rmSync(checkout, { force: true, recursive: true }));
+  const identity = deriveSnapshotIdentity({
+    artifactId: "seed4j-parent",
+    upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
+    upstreamPomVersion: "2.2.1-SNAPSHOT",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
     upstreamLicenseSha256:
       "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
-    upstreamPomVersion: "2.2.1-SNAPSHOT",
-    upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-    version:
-      "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
-  };
+  });
+  const modules = [
+    "seed4j-api",
+    "seed4j-engine",
+    "seed4j-test",
+    "seed4j-core-modules",
+    "seed4j-server",
+  ];
+  const packageJson =
+    '{"scripts":{"test:component:headless":"playwright test"}}';
+  writeFileSync(join(checkout, "LICENSE.txt"), "upstream Apache license\n");
+  writeFileSync(
+    join(checkout, "pom.xml"),
+    upstreamPom()
+      .replace(
+        "<artifactId>seed4j</artifactId>",
+        "<artifactId>seed4j-parent</artifactId>",
+      )
+      .replace("<packaging>jar</packaging>", "<packaging>pom</packaging>")
+      .replace(
+        "<properties>",
+        `<modules>${modules.map((name) => `<module>${name}</module>`).join("")}</modules><properties>`,
+      ),
+  );
+  for (const name of modules) {
+    mkdirSync(join(checkout, name));
+    writeFileSync(
+      join(checkout, name, "pom.xml"),
+      `<project><parent><groupId>com.seed4j</groupId><artifactId>seed4j-parent</artifactId><version>2.2.1-SNAPSHOT</version></parent><artifactId>${name === "seed4j-server" ? "seed4j" : name}</artifactId><dependencies><dependency><groupId>com.seed4j</groupId><artifactId>seed4j-api</artifactId>${name === "seed4j-server" ? "<version>2.2.1-SNAPSHOT</version>" : ""}</dependency></dependencies></project>`,
+    );
+  }
+  writeFileSync(join(checkout, "seed4j-server", "package.json"), packageJson);
 
   prepareUpstream({ checkoutDirectory: checkout, identity });
 
-  const preparedPom = readFileSync(join(checkout, "pom.xml"), "utf8");
-  assert.match(preparedPom, /<groupId>io\.github\.renanfranca<\/groupId>/);
-  assert.match(preparedPom, /<artifactId>seed4j-main-snapshot<\/artifactId>/);
-  assert.match(
-    preparedPom,
-    /<version>2\.2\.1-main\.20260907\.055800\.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT<\/version>/,
-  );
-  assert.match(preparedPom, /<name>Unofficial Seed4J main snapshot<\/name>/);
-  assert.match(preparedPom, /unofficial rebuild of Seed4J main/);
-  assert.match(
-    preparedPom,
-    /github\.com\/seed4j\/seed4j\/tree\/4eebd07bce14c9a6ac70bace157fcc616133e950/,
-  );
-  assert.match(preparedPom, /<id>renanfranca<\/id>/);
-  assert.match(
-    preparedPom,
-    /<tag>4eebd07bce14c9a6ac70bace157fcc616133e950<\/tag>/,
-  );
-  assert.match(
-    preparedPom,
-    /https:\/\/central\.sonatype\.com\/repository\/maven-snapshots\//,
-  );
-  assert.doesNotMatch(
-    preparedPom,
-    /<groupId>com\.seed4j<\/groupId>\s*<artifactId>seed4j<\/artifactId>/,
-  );
+  const parent = readFileSync(join(checkout, "pom.xml"), "utf8");
+  assert.match(parent, /<packaging>pom<\/packaging>/);
+  assert.match(parent, /<module>seed4j-server<\/module>/);
+  for (const name of modules) {
+    const pom = readFileSync(join(checkout, name, "pom.xml"), "utf8");
+    assert.doesNotMatch(pom, />com\.seed4j<|>2\.2\.1-SNAPSHOT</);
+    assert.ok(pom.includes(`<version>${identity.version}</version>`));
+    assert.match(
+      pom,
+      /<groupId>io\.github\.renanfranca<\/groupId>\s*<artifactId>seed4j-api<\/artifactId>/,
+    );
+    if (name !== "seed4j-server") {
+      const metadata = join(checkout, name, "src/main/resources/META-INF");
+      assert.match(
+        readFileSync(join(metadata, "seed4j-main-snapshot.properties"), "utf8"),
+        new RegExp(`^artifact-id=${name}\n`),
+      );
+      assert.equal(
+        readFileSync(
+          join(metadata, "LICENSE-seed4j-main-snapshot.txt"),
+          "utf8",
+        ),
+        "upstream Apache license\n",
+      );
+    }
+  }
   assert.equal(
-    readFileSync(join(checkout, "package.json"), "utf8"),
-    '{"name":"seed4j","version":"2.2.1-SNAPSHOT"}\n',
+    readFileSync(join(checkout, "seed4j-server", "package.json"), "utf8"),
+    packageJson,
   );
-  assert.equal(
-    readFileSync(join(checkout, "LICENSE.txt"), "utf8"),
-    "upstream Apache license\n",
-  );
-  assert.equal(
-    readFileSync(join(checkout, "src/main/java/App.java"), "utf8"),
-    "final class App {}\n",
-  );
-  assert.equal(
-    readFileSync(
-      join(
-        checkout,
-        "src/main/resources/META-INF/seed4j-main-snapshot.properties",
-      ),
-      "utf8",
-    ),
-    `artifact-id=seed4j-main-snapshot
-group-id=io.github.renanfranca
-publisher=renanfranca
-release-channel=unofficial-main-snapshot
-upstream-commit=4eebd07bce14c9a6ac70bace157fcc616133e950
-upstream-commit-timestamp=2026-09-07T05:58:00Z
-upstream-license-sha256=d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e
-upstream-pom-version=2.2.1-SNAPSHOT
-upstream-repository=https://github.com/seed4j/seed4j
-version=2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT
-`,
-  );
-  assert.match(
-    readFileSync(
-      join(
-        checkout,
-        "src/main/resources/META-INF/NOTICE-seed4j-main-snapshot.txt",
-      ),
-      "utf8",
-    ),
-    /not an official Seed4J publication/,
-  );
-  assert.equal(
-    readFileSync(
-      join(
-        checkout,
-        "src/main/resources/META-INF/LICENSE-seed4j-main-snapshot.txt",
-      ),
-      "utf8",
-    ),
-    "upstream Apache license\n",
-  );
-
-  rmSync(checkout, { force: true, recursive: true });
 });
 
 test("round-trips a qualified identity as one opaque workflow output and rejects altered identity fields", () => {
@@ -135,13 +104,13 @@ test("round-trips a qualified identity as one opaque workflow output and rejects
     upstreamLicenseSha256:
       "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
     groupId: "io.github.renanfranca",
-    artifactId: "seed4j-main-snapshot",
+    artifactId: "seed4j-parent",
   };
 
   const encoded = encodeIdentity(identity);
 
   assert.deepEqual(decodeIdentity(encoded), {
-    artifactId: "seed4j-main-snapshot",
+    artifactId: "seed4j-parent",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
     upstreamLicenseSha256:

@@ -147,7 +147,7 @@ test("publication keeps untrusted build code outside the main-only Central crede
   );
   assert.match(
     build,
-    /- name: Format personal POM overlay with upstream Prettier\n        id: format_upstream_pom\n        working-directory: upstream\n        run: \|\n          printf '%s' 'Format personal POM overlay with upstream Prettier' > "\$RUNNER_TEMP\/publisher-build-step"\n          set -o pipefail\n          \.\/node_modules\/\.bin\/prettier --write pom\.xml 2>&1 \| tee "\$RUNNER_TEMP\/publisher-build\.log"/,
+    /- name: Format personal POM overlay with upstream Prettier\n        id: format_upstream_pom\n        working-directory: upstream\n        run: \|\n          printf '%s' 'Format personal POM overlay with upstream Prettier' > "\$RUNNER_TEMP\/publisher-build-step"\n          set -o pipefail\n          \.\/node_modules\/\.bin\/prettier --write pom\.xml seed4j-\*\/pom\.xml 2>&1 \| tee "\$RUNNER_TEMP\/publisher-build\.log"/,
   );
   assert.match(
     build,
@@ -268,8 +268,10 @@ test("the operator runbook makes every publication and recovery gate explicit", 
   )?.[1];
 
   assert.match(readme, /unofficial/i);
-  assert.match(readme, /io\.github\.renanfranca:seed4j-main-snapshot/);
-  assert.match(readme, /POM[\s\S]*main JAR[\s\S]*tests/i);
+  for (const module of ["parent", "api", "engine", "test", "core-modules"]) {
+    assert.ok(readme.includes(`io.github.renanfranca:seed4j-${module}`));
+  }
+  assert.match(readme, /exactly five POMs and four JARs/);
   assert.match(readme, /sources and Javadoc JARs[^\n]*not published/i);
   assert.match(readme, /provenance[\s\S]*exact upstream SHA/i);
   assert.match(readme, /60 days/);

@@ -1,72 +1,117 @@
-const { sanitizeDiagnostic } = require("./operations-policy.cjs");
-
+const { child, elements, value, xmlRoot } = require("./maven-xml.cjs");
+const { centralTimestamp } = require("./publisher-policy.cjs");
+const {
+  artifactDefinitions,
+  CENTRAL_REPOSITORY,
+  JAR_MODULES,
+  PARENT_ARTIFACT_ID,
+} = require("./snapshot-layout.cjs");
 async function inspectPublicArtifacts(identity, publicRequest) {
-  const root = `https://central.sonatype.com/repository/maven-snapshots/${identity.groupId.replaceAll(".", "/")}/${identity.artifactId}/${identity.version}`;
-  const metadataUrl = `${root}/maven-metadata.xml`;
-  try {
-    const metadata = await publicRequest(metadataUrl, "GET");
-    if (metadata.status !== 200 || typeof metadata.body !== "string")
-      return {
-        summary: `Public metadata unconfirmed (HTTP ${metadata.status}); manual inspection required before retry-last-failed`,
-        evidence: metadataUrl,
-      };
-    const versions = [
-      ...metadata.body.matchAll(
-        /<snapshotVersion>([\s\S]*?)<\/snapshotVersion>/g,
-      ),
-    ].map((match) => ({
-      extension: xmlTag(match[1], "extension"),
-      classifier: xmlTag(match[1], "classifier"),
-      value: xmlTag(match[1], "value"),
-    }));
-    const roles = [
-      { name: "POM", extension: "pom", classifier: undefined },
-      { name: "main JAR", extension: "jar", classifier: undefined },
-      { name: "tests JAR", extension: "jar", classifier: "tests" },
-    ];
-    const observations = [];
-    for (const role of roles) {
-      const version = versions.find(
-        (candidate) =>
-          candidate.extension === role.extension &&
-          candidate.classifier === role.classifier,
-      );
-      const prefix = identity.version.replace(/-SNAPSHOT$/, "-");
-      if (
-        !version ||
-        !version.value?.startsWith(prefix) ||
-        !/^[A-Za-z0-9.-]+$/.test(version.value)
-      ) {
-        observations.push(`${role.name} unconfirmed`);
-        continue;
-      }
-      const filename = `${identity.artifactId}-${version.value}${role.classifier ? `-${role.classifier}` : ""}.${role.extension}`;
-      const response = await publicRequest(`${root}/${filename}`, "HEAD");
-      observations.push(
-        `${role.name} ${response.status === 200 ? "confirmed" : "unconfirmed"}`,
-      );
-    }
-    return {
-      summary: `${observations.join("; ")}; manual inspection required before retry-last-failed`,
-      evidence: metadataUrl,
-    };
-  } catch (error) {
-    return {
-      summary: `Public artifact check unavailable: ${sanitizeDiagnostic(error.message)}; manual inspection required`,
-      evidence: metadataUrl,
-    };
-  }
+  return observePublicSnapshot(identity, publicRequest, {
+    tolerateErrors: true,
+  });
 }
 
-function xmlTag(xml, tag) {
-  return new RegExp(`<${tag}>([^<]+)<\\/${tag}>`).exec(xml)?.[1];
+function snapshotMetadataUrl(identity, artifactId = identity.artifactId) {
+  const group = identity.groupId.replaceAll(".", "/");
+  return `${CENTRAL_REPOSITORY}${group}/${artifactId}/${identity.version}/maven-metadata.xml`;
+}
+
+async function observePublicSnapshot(
+  identity,
+  request,
+  { requireStatus = requirePublicStatus, tolerateErrors = false } = {},
+) {
+  const visible = [];
+  let metadataPresent = false;
+  let uncertain = false;
+  const definitions = artifactDefinitions(identity);
+  for (const artifactId of [PARENT_ARTIFACT_ID, ...JAR_MODULES]) {
+    try {
+      const url = snapshotMetadataUrl(identity, artifactId);
+      const response = await request(url, "GET");
+      if (response.status === 404) continue;
+      requireStatus(response, 200, "public Central snapshot metadata");
+      metadataPresent = true;
+      const metadata = xmlRoot(response.body, "metadata");
+      if (
+        value(metadata, "groupId") !== identity.groupId ||
+        value(metadata, "artifactId") !== artifactId ||
+        value(metadata, "version") !== identity.version
+      )
+        throw new Error(
+          `Public Central metadata coordinates do not match ${artifactId}.`,
+        );
+      const versions = elements(
+        child(child(metadata, "versioning"), "snapshotVersions"),
+        "snapshotVersion",
+      );
+      for (const { extension } of definitions.filter(
+        (artifact) => artifact.artifactId === artifactId,
+      )) {
+        try {
+          const matching = versions.filter(
+            (entry) =>
+              value(entry, "extension") === extension &&
+              !value(entry, "classifier"),
+          );
+          if (matching.length === 0) continue;
+          const version = value(matching[0], "value");
+          const prefix = identity.version.slice(0, -"SNAPSHOT".length);
+          if (
+            matching.length !== 1 ||
+            !version?.startsWith(prefix) ||
+            !/^\d{8}\.\d{6}-[1-9]\d*$/.test(version.slice(prefix.length))
+          )
+            throw new Error(
+              `Invalid public Central snapshot entry for ${artifactId}.${extension}.`,
+            );
+          const artifactUrl = new URL(
+            `${artifactId}-${version}.${extension}`,
+            url,
+          ).href;
+          const file = await request(artifactUrl, "HEAD");
+          if (file.status === 404) continue;
+          requireStatus(file, 200, "public Central snapshot file");
+          const publishedAt = centralTimestamp(value(matching[0], "updated"));
+          visible.push({ artifactId, extension, publishedAt });
+        } catch (error) {
+          if (!tolerateErrors) throw error;
+          uncertain = true;
+        }
+      }
+    } catch (error) {
+      if (!tolerateErrors) throw error;
+      uncertain = true;
+    }
+  }
+  const status = uncertain
+    ? "unknown"
+    : visible.length === definitions.length
+      ? "complete"
+      : metadataPresent
+        ? "partial"
+        : "absent";
+  return {
+    status,
+    visible,
+    summary: `Public files ${visible.length}/${definitions.length}: ${visible.map(({ artifactId, extension }) => `${artifactId}.${extension}`).join(", ") || "none confirmed"}${uncertain ? " (check incomplete)" : ""}`,
+    evidence: snapshotMetadataUrl(identity),
+  };
+}
+
+function requirePublicStatus(response, expected, label) {
+  if (response?.status !== expected) {
+    throw new Error(`${label} returned HTTP ${response?.status}.`);
+  }
 }
 
 async function fetchPublic(url, method) {
   const response = await fetch(url, {
     method,
+    cache: "no-store",
     headers: { "User-Agent": "seed4j-main-snapshot-publisher" },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(10_000),
   });
   return {
     status: response.status,
@@ -77,4 +122,9 @@ async function fetchPublic(url, method) {
   };
 }
 
-module.exports = { inspectPublicArtifacts, fetchPublic };
+module.exports = {
+  inspectPublicArtifacts,
+  fetchPublic,
+  observePublicSnapshot,
+  snapshotMetadataUrl,
+};

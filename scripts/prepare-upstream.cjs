@@ -1,39 +1,114 @@
+const { XMLSerializer } = require("@xmldom/xmldom");
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const {
   decodeIdentity,
-  requireDerivedIdentity,
+  requireModularIdentity,
 } = require("./publisher-policy.cjs");
 
-const CENTRAL_SNAPSHOT_REPOSITORY =
-  "https://central.sonatype.com/repository/maven-snapshots/";
+const { child, elements, value, xmlRoot } = require("./maven-xml.cjs");
+const {
+  CENTRAL_REPOSITORY,
+  JAR_MODULES,
+  PARENT_ARTIFACT_ID,
+} = require("./snapshot-layout.cjs");
 
 function prepareUpstream({ checkoutDirectory, identity }) {
-  requireDerivedIdentity(identity);
-  const pomPath = join(checkoutDirectory, "pom.xml");
-  const pom = readFileSync(pomPath, "utf8");
-  const metadataRegion = /(<\/parent>\s*\n)([\s\S]*?)(  <properties>\s*\n)/;
-  const match = metadataRegion.exec(pom);
-  if (!match) {
-    throw new Error(
-      "Upstream POM does not contain the expected top-level metadata region.",
-    );
-  }
+  requireModularIdentity(identity);
+  const root = xmlRoot(
+    readFileSync(join(checkoutDirectory, "pom.xml"), "utf8"),
+    "project",
+  );
+  const moduleDirectories = [...JAR_MODULES, "seed4j-server"];
+  const modules = elements(child(root, "modules"), "module").map((module) =>
+    module.textContent.trim(),
+  );
   if (
-    !match[2].includes("<groupId>com.seed4j</groupId>") ||
-    !match[2].includes("<artifactId>seed4j</artifactId>") ||
-    !match[2].includes(`<version>${identity.upstreamPomVersion}</version>`)
+    value(root, "groupId") !== "com.seed4j" ||
+    value(root, "artifactId") !== PARENT_ARTIFACT_ID ||
+    value(root, "version") !== identity.upstreamPomVersion ||
+    value(root, "packaging") !== "pom" ||
+    [...modules].sort().join("\n") !== [...moduleDirectories].sort().join("\n")
   ) {
     throw new Error(
-      "Upstream POM identity does not match the qualified candidate.",
+      "Upstream POM does not match the qualified Seed4J reactor.",
     );
   }
-  const preparedPom = pom.replace(
-    metadataRegion,
-    `$1${personalPomMetadata(identity)}$3`,
+  const modulePoms = moduleDirectories.map((directory) => {
+    const path = join(checkoutDirectory, directory, "pom.xml");
+    const project = xmlRoot(readFileSync(path, "utf8"), "project");
+    const parent = child(project, "parent");
+    const expectedId = directory === "seed4j-server" ? "seed4j" : directory;
+    if (
+      value(project, "artifactId") !== expectedId ||
+      value(parent, "groupId") !== "com.seed4j" ||
+      value(parent, "artifactId") !== PARENT_ARTIFACT_ID ||
+      value(parent, "version") !== identity.upstreamPomVersion
+    ) {
+      throw new Error(
+        `Unexpected upstream reactor coordinates in ${directory}.`,
+      );
+    }
+    return { path, project };
+  });
+  const publication = xmlRoot(
+    `<project${root.namespaceURI ? ` xmlns="${root.namespaceURI}"` : ""}>${personalPomMetadata(identity)}</project>`,
+    "project",
   );
-  writeFileSync(pomPath, preparedPom);
+  for (const metadata of elements(publication)) {
+    const previous = child(root, metadata.tagName);
+    const replacement = root.ownerDocument.importNode(metadata, true);
+    if (previous) root.replaceChild(replacement, previous);
+    else root.insertBefore(replacement, child(root, "modules"));
+  }
+  const serializer = new XMLSerializer();
+  for (const { path, project } of [
+    { path: join(checkoutDirectory, "pom.xml"), project: root },
+    ...modulePoms,
+  ]) {
+    rewriteInternalCoordinates(project, identity);
+    writeFileSync(path, serializer.serializeToString(project.ownerDocument));
+  }
+  const license = readFileSync(join(checkoutDirectory, "LICENSE.txt"));
+  for (const module of JAR_MODULES) {
+    writeJarMetadata(
+      join(checkoutDirectory, module),
+      identity,
+      module,
+      license,
+    );
+  }
+}
 
+function rewriteInternalCoordinates(project, identity) {
+  for (const group of Array.from(project.getElementsByTagName("groupId"))) {
+    if (group.textContent.trim() !== "com.seed4j") continue;
+    const coordinate = group.parentNode;
+    if (
+      ![PARENT_ARTIFACT_ID, ...JAR_MODULES, "seed4j"].includes(
+        value(coordinate, "artifactId"),
+      )
+    ) {
+      throw new Error("Unexpected com.seed4j reactor coordinate.");
+    }
+    group.textContent = identity.groupId;
+    const version = child(coordinate, "version");
+    if (version) {
+      if (
+        ![identity.upstreamPomVersion, "${project.version}"].includes(
+          version.textContent.trim(),
+        )
+      ) {
+        throw new Error(
+          "Unexpected version on an internal Seed4J reactor coordinate.",
+        );
+      }
+      version.textContent = identity.version;
+    }
+  }
+}
+
+function writeJarMetadata(checkoutDirectory, identity, artifactId, license) {
   const metadataDirectory = join(
     checkoutDirectory,
     "src/main/resources/META-INF",
@@ -41,11 +116,11 @@ function prepareUpstream({ checkoutDirectory, identity }) {
   mkdirSync(metadataDirectory, { recursive: true });
   writeFileSync(
     join(metadataDirectory, "LICENSE-seed4j-main-snapshot.txt"),
-    readFileSync(join(checkoutDirectory, "LICENSE.txt")),
+    license,
   );
   writeFileSync(
     join(metadataDirectory, "seed4j-main-snapshot.properties"),
-    provenance(identity),
+    provenance(identity, artifactId),
   );
   writeFileSync(
     join(metadataDirectory, "NOTICE-seed4j-main-snapshot.txt"),
@@ -63,7 +138,7 @@ function personalPomMetadata(identity) {
     An unofficial rebuild of Seed4J main at ${identity.upstreamSha}, published by renanfranca for experimental seed4j-cli
     compatibility testing.
   </description>
-  <packaging>jar</packaging>
+  <packaging>pom</packaging>
   <url>${sourceUrl}</url>
   <licenses>
     <license>
@@ -96,14 +171,14 @@ function personalPomMetadata(identity) {
     <snapshotRepository>
       <id>central-snapshots</id>
       <name>Central Portal snapshots</name>
-      <url>${CENTRAL_SNAPSHOT_REPOSITORY}</url>
+      <url>${CENTRAL_REPOSITORY}</url>
     </snapshotRepository>
   </distributionManagement>
 `;
 }
 
-function provenance(identity) {
-  return `artifact-id=${identity.artifactId}
+function provenance(identity, artifactId) {
+  return `artifact-id=${artifactId}
 group-id=${identity.groupId}
 publisher=renanfranca
 release-channel=unofficial-main-snapshot

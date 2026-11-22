@@ -4,11 +4,20 @@ This repository publishes **unofficial** personal rebuilds of the official Seed4
 experimental use by `seed4j-cli`. It is not operated or endorsed by the Seed4J maintainers and never publishes under
 their `com.seed4j` namespace.
 
-The only Maven coordinate is:
+Use the [Central Portal snapshot repository](https://central.sonatype.com/repository/maven-snapshots/) and the same
+derived version for each coordinate.
 
-```text
-io.github.renanfranca:seed4j-main-snapshot:<derived-snapshot-version>
-```
+| Coordinate                                  | Published files |
+| ------------------------------------------- | --------------- |
+| `io.github.renanfranca:seed4j-parent`       | POM             |
+| `io.github.renanfranca:seed4j-api`          | POM and JAR     |
+| `io.github.renanfranca:seed4j-engine`       | POM and JAR     |
+| `io.github.renanfranca:seed4j-test`         | POM and JAR     |
+| `io.github.renanfranca:seed4j-core-modules` | POM and JAR     |
+
+Declare `seed4j-engine` and `seed4j-core-modules` as compile dependencies and `seed4j-test` with test scope.
+Maven resolves `seed4j-api` transitively and resolves the parent when reading the module POMs. Enable snapshots
+for the repository in your Maven configuration.
 
 ## Publication contract
 
@@ -22,53 +31,31 @@ version, and the SHA-256 digest of the official license at that revision. Those 
 The version embeds the complete lowercase upstream commit SHA and is rejected if the derived value exceeds Maven's
 256-character limit. The timestamp precedes the SHA so versions retain chronological ordering.
 
-The data-only candidate contains exactly:
+The data-only bundle contains exactly five POMs and four JARs. The manifest lists all nine files with their Maven
+coordinates, sizes and SHA-256 digests, and records the upstream POM version, license digest and full SHA. Each JAR
+contains the upstream Apache-2.0 license, the publisher notice and provenance tied to the exact upstream SHA.
+Sources and Javadoc JARs are not published. The server participates in reactor verification.
 
-1. the generated POM;
-2. the main JAR; and
-3. the `tests` classifier JAR.
-
-Sources and Javadoc JARs are explicitly not published. The manifest fixes the personal GAV, exact filenames, roles,
-sizes, SHA-256 digests, repository URL, upstream POM version, and full upstream SHA. The main JAR also embeds immutable
-provenance carrying the exact upstream SHA, version, timestamp, official repository URL, personal publisher identity,
-and unofficial release-channel marker. The upstream Apache-2.0 license and the publisher notice are retained in the
-packaged JAR.
-
-Central snapshots can expire. A snapshot whose public Central metadata is less than 60 days old is an expected skip.
-At 60 days the same immutable base version becomes eligible for a retention refresh, and an absent snapshot is eligible
-for republication.
+The publisher checks Sonatype metadata and confirms each of the nine timestamped files. A complete publication
+less than 60 days old is skipped. Its age starts at the oldest confirmed file, so refreshing individual components
+cannot extend the age of the whole set. At 60 days the set is eligible for refresh. A fully absent set is eligible
+for publication. A partial set is eligible only through `retry-last-failed` for the recorded SHA.
 
 ## Credential boundary
 
 The qualification and build jobs never receive Central deployment secrets. Qualification has read-only access to the
 official commit, official `github-actions.yml` result, public Central metadata, and the sole marked retry issue. The
-build job checks out the exact qualified SHA without persisted credentials, applies only personal publication metadata
-and provenance, then runs upstream `npm ci`, `npm run lint:ci`, and one complete
-`./mvnw --batch-mode -ntp clean verify`.
+build job checks out the exact qualified SHA without persisted credentials. Qualification requires the modular
+`seed4j-parent` and a successful official `github-actions.yml` push run for the same SHA. In the build checkout,
+the publisher rewrites reactor coordinates to one personal group and version, formats the changed POMs with
+upstream Prettier, and runs upstream `npm ci`, `npm run lint:ci` and `./mvnw --batch-mode -ntp clean verify`.
+The reactor invokes the upstream Playwright installation and component test scripts.
 
-During that Maven gate only, a trusted publisher adapter recognizes the exact known Seed4J
-`test:component:headless` watcher command and temporarily replaces it with the no-watcher preview arrangement proven
-in diagnostic run 34727053924. It reuses the previously built TikUI files, prepares an instrumented Vite preview copy,
-and serves them with `tikui-core preview` and `vite preview --port 9000 --strictPort`; Cypress starts only after a
-non-empty `GET /style/tikui.css` succeeds within 30 seconds. The Cypress command, component configuration, coverage
-checks, and Maven lifecycle remain unchanged. The candidate JAR is already packaged before this verify-only
-instrumented copy is created, so the copy cannot enter the collected artifact.
-This adaptation exists because the diagnostic run correlated a Sass `inotify_add_watch` failure on Vite's temporary
-`node_modules/.vite/deps_temp_*` directory with missing CSS, while the preview runner passed 3/3 hosted samples.
-
-The adapter snapshots `package.json` and `package-lock.json` byte for byte, changes only the recognized script, and
-restores both manifests even when verification fails. It rejects an unfamiliar upstream contract, lockfile mutation,
-inexact restoration, or a failed Maven gate. Restoration completes before candidate collection, so the adaptation
-does not alter the qualified upstream SHA, become part of the candidate identity, or enter the collected artifacts.
-The Maven child also disables npm metadata saves while continuing to use the upstream lockfile for installation; this
-prevents npm 11.7 from rewriting platform metadata and keeps any actual lockfile mutation detectable.
-
-The deploy job is separate and main-only. It starts from a clean trusted publisher checkout and receives the opaque
-identity directly from qualification. Before creating Maven settings or a deployment plan, it decodes that trusted
-identity, requires an exact full-SHA and publication-identity match with the downloaded manifest, rechecks every digest
-and every nonofficial, legal, source, publisher, SCM, and repository POM field, and reads the main JAR as data to verify
-its exact provenance, notice, and license digest. It then runs only Maven Wrapper 3.9.16 with
-`maven-deploy-plugin:3.1.4:deploy-file`; it never runs upstream scripts, Maven lifecycle, JARs, or executable output.
+The main-only deploy job verifies the downloaded manifest against the trusted qualification identity. It checks
+the nine paths and hashes, the POM coordinates and internal references, and the license and provenance before
+creating Maven settings. It uses Maven Wrapper 3.9.16 with `maven-deploy-plugin:3.1.4:deploy-file`. It sends the
+parent POM first, then deploys the API, engine, test tools and core modules in that order, stopping at the first
+Maven failure. The job rechecks Sonatype before upload and confirms all nine public files before reporting success.
 
 Only this deploy job references the protected `central-snapshots` GitHub Environment. Credentials are written to a
 temporary mode-`0600` Maven settings file, removed after Maven exits, scrubbed from the child environment, and never
@@ -98,8 +85,8 @@ The repository starts with `pilotCompleted=false`, `scheduleMode=weekly`, `centr
 review. Scheduled runs therefore stop safely before candidate resolution. The first publication must be a manually
 observed pilot dispatched from `main` with operation `head`; the protected-environment approval is the final human gate.
 
-After resolving the published POM, main JAR, and tests JAR from a clean Maven repository—and confirming that sources and
-Javadoc remain unavailable—record `pilotCompleted=true` through a reviewed pull request. The default schedule is every
+After resolving the five POMs and four JARs from a clean Maven repository and confirming that sources and
+Javadoc remain unavailable, record `pilotCompleted=true` through a reviewed pull request. The default schedule is every
 Monday at 06:17 UTC.
 
 Daily checks at 06:17 UTC remain inert while `scheduleMode=weekly`. Daily publication can be selected only through a
@@ -173,14 +160,16 @@ CI and retention unassessed because cycle qualification checks the token before 
 
 The issue body keeps the latest attempt and bounded cycle state; comments preserve the full attempt history. A comment
 mentions `@renanfranca` only when the SHA, blocker, or final outcome changes. The final issue is closed. A publisher build failure closes the cycle and creates or updates the separate
-`publisher-failure` issue. After a failed or ambiguous deploy, reporting probes public Central metadata and the POM,
-main JAR, and tests JAR, records what is publicly confirmed, and closes the cycle. It never sends the bundle again
-automatically after an ambiguous deploy.
+`publisher-failure` issue. After a failed or ambiguous deploy, reporting records which of the nine files Sonatype confirms and closes the cycle.
+A partial set requires an explicit retry.
 
 Use manual `head` to recheck the current official `main`; it starts or joins a publication cycle and evaluates that
 current SHA. Use `retry-last-failed` only to retry a publication with a recorded immutable identity in the sole open
 `publisher-failure` issue. The retry re-fetches provenance, verifies reachability, requires successful official CI for
-the recorded SHA, and applies the existing token and retention checks.
+the recorded SHA, and checks the token and the current public state of all nine files. If only part is visible,
+the retry rebuilds and resends the same version in parent-first order. If the complete set is already within its
+retention window, the retry closes the failure without another upload. A recorded monolithic
+`io.github.renanfranca:seed4j-main-snapshot` candidate is ineligible. Use `head` to qualify the modular reactor.
 
 When no matching failure issue exists, or the sole issue has no recorded identity block, retry returns `outcome: skip`
 with stable reason `no-retryable-publication`. The Actions run summary displays:
@@ -251,5 +240,16 @@ npm run prettier:check
 npm run dry-run
 ```
 
-The dry run builds and verifies a deterministic local fixture in `/tmp/seed4j-main-snapshots-dry-run`, prints the exact
-credential-free deployment plan, and never contacts or publishes to Central.
+The dry run verifies a synthetic modular bundle in a temporary directory and prints five deployment commands without
+credentials or network calls. To exercise the same Maven goal with a real bundle, publish to an empty temporary file
+repository.
+
+```bash
+node scripts/deploy-candidate.cjs execute-local --bundle "$bundle" --identity "$identity" \
+  --repository "file://$temporary_repository"
+```
+
+Use an absolute path for the file repository and an identity from qualification. In a separate Maven project with
+an empty `maven.repo.local`, compile with the engine and core modules, run a test using `seed4j-test`, and check
+that the dependency tree includes `seed4j-api` and Maven resolved `seed4j-parent` under the same group and version.
+Repeat the consumer check against public Sonatype after the protected `head` deployment.

@@ -1,81 +1,172 @@
-const { closeSync, openSync, unlinkSync, writeFileSync } = require("node:fs");
-const { join, resolve } = require("node:path");
+const {
+  appendFileSync,
+  closeSync,
+  openSync,
+  unlinkSync,
+  writeFileSync,
+} = require("node:fs");
+const { resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { verifyCandidateBundle } = require("./artifact-policy.cjs");
-const { decodeIdentity } = require("./publisher-policy.cjs");
+const {
+  CENTRAL_REPOSITORY,
+  JAR_MODULES,
+  PARENT_ARTIFACT_ID,
+} = require("./snapshot-layout.cjs");
+const {
+  decodeIdentity,
+  requireModularIdentity,
+  retentionDecision,
+} = require("./publisher-policy.cjs");
+const { canonicalPublisherTimestamp } = require("./operations-policy.cjs");
+const {
+  fetchPublic,
+  observePublicSnapshot,
+} = require("./public-artifact-observation.cjs");
+const { setTimeout: delay } = require("node:timers/promises");
 
 function buildDeploymentPlan({
   bundleDirectory,
   encodedIdentity,
   settingsPath,
+  fileRepository,
 }) {
-  const manifest = verifyCandidateBundle(
-    bundleDirectory,
-    decodeIdentity(encodedIdentity),
-  );
-  const prefix = join(
-    bundleDirectory,
-    `${manifest.publication.artifactId}-${manifest.publication.version}`,
-  );
-  return Object.freeze({
-    arguments: [
-      "--batch-mode",
-      "-ntp",
-      `--settings=${settingsPath}`,
-      "org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy-file",
-      `-Durl=${manifest.publication.repositoryUrl}`,
-      "-DrepositoryId=central-snapshots",
-      `-DgroupId=${manifest.publication.groupId}`,
-      `-DartifactId=${manifest.publication.artifactId}`,
-      `-Dversion=${manifest.publication.version}`,
-      "-Dpackaging=jar",
-      `-DpomFile=${prefix}.pom`,
-      `-Dfile=${prefix}.jar`,
-      `-Dfiles=${prefix}-tests.jar`,
-      "-Dclassifiers=tests",
-      "-Dtypes=jar",
-      "-DgeneratePom=false",
-      "-DretryFailedDeploymentCount=3",
-    ],
+  const identity = decodeIdentity(encodedIdentity);
+  verifyCandidateBundle(bundleDirectory, identity);
+  const repository =
+    fileRepository === undefined
+      ? CENTRAL_REPOSITORY
+      : localRepositoryUrl(fileRepository);
+  return {
     command: "./mvnw",
-  });
+    deployments: [PARENT_ARTIFACT_ID, ...JAR_MODULES].map((artifactId) => {
+      const packaging = artifactId === PARENT_ARTIFACT_ID ? "pom" : "jar";
+      const prefix = resolve(
+        bundleDirectory,
+        `${artifactId}-${identity.version}`,
+      );
+      return [
+        "--batch-mode",
+        "-ntp",
+        ...(settingsPath ? [`--settings=${settingsPath}`] : []),
+        "org.apache.maven.plugins:maven-deploy-plugin:3.1.4:deploy-file",
+        `-Durl=${repository}`,
+        "-DrepositoryId=central-snapshots",
+        `-DgroupId=${identity.groupId}`,
+        `-DartifactId=${artifactId}`,
+        `-Dversion=${identity.version}`,
+        `-Dpackaging=${packaging}`,
+        `-DpomFile=${prefix}.pom`,
+        `-Dfile=${prefix}.${packaging}`,
+        "-DgeneratePom=false",
+        "-DretryFailedDeploymentCount=1",
+      ];
+    }),
+  };
+}
+
+function localRepositoryUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "file:" || url.host || url.search || url.hash) {
+    throw new Error(
+      "Local deployment requires an absolute file:// repository URL.",
+    );
+  }
+  return url.href;
 }
 
 function executeDeployment({
   bundleDirectory,
   encodedIdentity,
   environment = process.env,
+  fileRepository,
   password,
   repositoryDirectory = resolve(__dirname, ".."),
   settingsPath,
   stdio = "inherit",
   username,
 }) {
-  requireCredentials(username, password);
+  if (fileRepository === undefined) requireCredentials(username, password);
   const plan = buildDeploymentPlan({
     bundleDirectory,
     encodedIdentity,
+    fileRepository,
     settingsPath,
   });
-  writePrivateSettings({ password, settingsPath, username });
+  if (fileRepository === undefined)
+    writePrivateSettings({ password, settingsPath, username });
   const {
     CENTRAL_PASSWORD: _password,
     CENTRAL_USERNAME: _username,
     ...childEnvironment
   } = environment;
   try {
-    const result = spawnSync(plan.command, plan.arguments, {
-      cwd: repositoryDirectory,
-      env: childEnvironment,
-      stdio,
-    });
-    if (result.error) {
-      throw result.error;
+    let result;
+    for (const arguments_ of plan.deployments) {
+      result = spawnSync(plan.command, arguments_, {
+        cwd: repositoryDirectory,
+        env: childEnvironment,
+        stdio,
+      });
+      if (result.error) throw result.error;
+      if (result.status !== 0) break;
     }
     return result;
   } finally {
-    unlinkSync(settingsPath);
+    if (fileRepository === undefined) unlinkSync(settingsPath);
   }
+}
+
+async function publishDeployment({
+  publicationOperation,
+  publicRequest = fetchPublic,
+  wait = delay,
+  ...deployment
+}) {
+  if (!["head", "retry-last-failed"].includes(publicationOperation)) {
+    throw new Error(
+      "Central deployment requires the qualified publisher operation.",
+    );
+  }
+  const identity = requireModularIdentity(
+    decodeIdentity(deployment.encodedIdentity),
+  );
+  const before = await observePublicSnapshot(identity, publicRequest);
+  const now = () => canonicalPublisherTimestamp(new Date().toISOString());
+  const eligibility = retentionDecision({
+    observedSnapshot: before,
+    now: now(),
+    operation: publicationOperation,
+  });
+  if (eligibility.reason === "partial-snapshot-requires-retry") {
+    throw new Error(
+      `${before.summary}. Use retry-last-failed to recover this SHA.`,
+    );
+  }
+  if (eligibility.outcome === "skip")
+    return { status: 0, observation: before, identity };
+
+  const result = executeDeployment(deployment);
+  if (result.status !== 0) return result;
+
+  let after;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await wait(15_000);
+    after = await observePublicSnapshot(identity, publicRequest, {
+      tolerateErrors: true,
+    });
+    if (
+      after.status === "complete" &&
+      retentionDecision({
+        observedSnapshot: after,
+        now: now(),
+        operation: publicationOperation,
+      }).outcome === "skip"
+    ) {
+      return { status: 0, observation: after, identity };
+    }
+  }
+  throw new Error(`Public snapshot confirmation failed. ${after.summary}.`);
 }
 
 function requireCredentials(username, password) {
@@ -122,7 +213,7 @@ function xml(value) {
 
 function parseRequest(arguments_) {
   const [operation, ...options] = arguments_;
-  if (operation !== "dry-run" && operation !== "execute") {
+  if (!["dry-run", "execute", "execute-local"].includes(operation)) {
     throw new Error(`Unsupported deployment operation '${operation ?? ""}'.`);
   }
   const values = {};
@@ -130,7 +221,9 @@ function parseRequest(arguments_) {
     const option = options[index];
     const value = options[index + 1];
     if (
-      !["--bundle", "--identity", "--settings"].includes(option) ||
+      !["--bundle", "--identity", "--settings", "--repository"].includes(
+        option,
+      ) ||
       !value ||
       value.startsWith("--") ||
       values[option]
@@ -139,20 +232,28 @@ function parseRequest(arguments_) {
     }
     values[option] = value;
   }
-  if (!values["--bundle"] || !values["--identity"] || !values["--settings"]) {
+  const local = operation === "execute-local";
+  if (
+    !values["--bundle"] ||
+    !values["--identity"] ||
+    (local
+      ? !values["--repository"] || values["--settings"]
+      : !values["--settings"] || values["--repository"])
+  ) {
     throw new Error(
-      "Deployment requires --bundle, --identity, and --settings.",
+      "Deployment requires --bundle, --identity, and --settings (or execute-local with --repository file://...).",
     );
   }
   return {
     bundleDirectory: values["--bundle"],
     encodedIdentity: values["--identity"],
+    fileRepository: values["--repository"],
     operation,
     settingsPath: values["--settings"],
   };
 }
 
-function run() {
+async function run() {
   const request = parseRequest(process.argv.slice(2));
   if (request.operation === "dry-run") {
     console.log(
@@ -168,25 +269,37 @@ function run() {
     );
     return;
   }
-  const result = executeDeployment({
+  const deployment = {
     bundleDirectory: request.bundleDirectory,
     encodedIdentity: request.encodedIdentity,
+    fileRepository: request.fileRepository,
     password: process.env.CENTRAL_PASSWORD,
     settingsPath: request.settingsPath,
     username: process.env.CENTRAL_USERNAME,
-  });
+  };
+  const result =
+    request.operation === "execute-local"
+      ? executeDeployment(deployment)
+      : await publishDeployment({
+          ...deployment,
+          publicationOperation: process.env.PUBLISHER_OPERATION,
+        });
+  if (result.observation) {
+    const summary = `Confirmed ${result.identity.groupId} at ${result.identity.version}. ${result.observation.summary}.`;
+    console.log(summary);
+    if (process.env.GITHUB_STEP_SUMMARY)
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + "\n");
+  }
   if (result.status !== 0) {
     process.exitCode = result.status ?? 1;
   }
 }
 
 if (require.main === module) {
-  try {
-    run();
-  } catch (error) {
+  run().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
-  }
+  });
 }
 
-module.exports = { buildDeploymentPlan, executeDeployment, parseRequest };
+module.exports = { buildDeploymentPlan, executeDeployment, publishDeployment };

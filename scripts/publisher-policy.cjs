@@ -1,4 +1,5 @@
-const PERSONAL_ARTIFACT_ID = "seed4j-main-snapshot";
+const LEGACY_ARTIFACT_ID = "seed4j-main-snapshot";
+const { PARENT_ARTIFACT_ID } = require("./snapshot-layout.cjs");
 const PERSONAL_GROUP_ID = "io.github.renanfranca";
 const MAX_MAVEN_VERSION_LENGTH = 256;
 const FAILURE_STATE_START =
@@ -7,11 +8,15 @@ const FAILURE_STATE_END =
   "<!-- seed4j-main-snapshot-publisher-failure-state:end -->";
 
 function deriveSnapshotIdentity({
+  artifactId = PARENT_ARTIFACT_ID,
   upstreamCommitTimestamp,
   upstreamLicenseSha256,
   upstreamPomVersion,
   upstreamSha,
 }) {
+  if (![PARENT_ARTIFACT_ID, LEGACY_ARTIFACT_ID].includes(artifactId)) {
+    throw new Error("Unsupported snapshot artifact identity.");
+  }
   requireUpstreamSha(upstreamSha);
   requireUpstreamTimestamp(upstreamCommitTimestamp);
   requireUpstreamLicenseSha256(upstreamLicenseSha256);
@@ -31,7 +36,7 @@ function deriveSnapshotIdentity({
   }
 
   return Object.freeze({
-    artifactId: PERSONAL_ARTIFACT_ID,
+    artifactId,
     groupId: PERSONAL_GROUP_ID,
     upstreamCommitTimestamp,
     upstreamLicenseSha256,
@@ -95,6 +100,14 @@ function requireDerivedIdentity(identity) {
   return derived;
 }
 
+function requireModularIdentity(identity) {
+  const qualified = requireDerivedIdentity(identity);
+  if (qualified.artifactId !== PARENT_ARTIFACT_ID) {
+    throw new Error("Publication requires a modular snapshot.");
+  }
+  return qualified;
+}
+
 function qualifyCandidate({
   candidate,
   operation,
@@ -134,6 +147,7 @@ function retryIdentity(retryIssueBody, retryReachable) {
 function identityFromFailureState(retryIssueBody) {
   const state = failureState(retryIssueBody);
   const identity = deriveSnapshotIdentity({
+    artifactId: state.artifactId,
     upstreamCommitTimestamp: state.upstreamCommitTimestamp,
     upstreamLicenseSha256: state.upstreamLicenseSha256,
     upstreamPomVersion: state.upstreamPomVersion,
@@ -207,24 +221,30 @@ function successfulOfficialUpstreamBuild(upstreamSha, upstreamCheck) {
   );
 }
 
-function retentionDecision({ centralMetadata, identity, now }) {
+function retentionDecision({ now, observedSnapshot, operation }) {
   requireUpstreamTimestamp(now);
-  if (centralMetadata?.status === 404) {
-    return Object.freeze({ outcome: "publish", reason: "snapshot-absent" });
+  if (observedSnapshot.status === "absent")
+    return { outcome: "publish", reason: "snapshot-absent" };
+  if (observedSnapshot.status === "partial") {
+    return operation === "retry-last-failed"
+      ? { outcome: "publish", reason: "partial-snapshot-retry" }
+      : {
+          outcome: "skip",
+          reason: "partial-snapshot-requires-retry",
+          openFailureIssue: false,
+        };
   }
-  if (centralMetadata?.status !== 200) {
-    throw new Error(
-      `Central metadata request returned status '${centralMetadata?.status ?? ""}'.`,
-    );
-  }
-  if (centralMetadata.version !== identity.version) {
-    throw new Error(
-      `Central metadata version '${centralMetadata.version ?? ""}' does not match '${identity.version}'.`,
-    );
-  }
-  const publishedAt = centralTimestamp(centralMetadata.lastUpdated);
+  if (observedSnapshot.status !== "complete")
+    throw new Error("Public snapshot availability is unknown.");
+  const oldest = Math.min(
+    ...observedSnapshot.visible.map(({ publishedAt }) => publishedAt.valueOf()),
+  );
+  return retentionForPublication(oldest, now);
+}
+
+function retentionForPublication(publishedAt, now) {
   const sixtyDays = 60 * 24 * 60 * 60 * 1000;
-  if (new Date(now).valueOf() - publishedAt.valueOf() < sixtyDays) {
+  if (new Date(now).valueOf() - publishedAt < sixtyDays) {
     return Object.freeze({
       openFailureIssue: false,
       outcome: "skip",
@@ -297,11 +317,14 @@ function requireUpstreamPomVersion(upstreamPomVersion) {
 module.exports = {
   FAILURE_STATE_END,
   FAILURE_STATE_START,
+  PARENT_ARTIFACT_ID,
+  centralTimestamp,
   decodeIdentity,
   deriveSnapshotIdentity,
   encodeIdentity,
   identityFromFailureState,
   qualifyCandidate,
   requireDerivedIdentity,
+  requireModularIdentity,
   retentionDecision,
 };
