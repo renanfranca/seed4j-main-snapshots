@@ -105,6 +105,10 @@ jobs:
         run: |
           if [ "$REASON" = "no-retryable-publication" ]; then
             printf '%s\n' "No failed publication is eligible for retry. Use operation ‘head’ to recheck the current official main." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$REASON" = "legacy-snapshot-ineligible" ]; then
+            printf '%s\n' "The recorded SHA uses the retired monolithic format. Use operation ‘head’ to qualify the modular reactor." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$REASON" = "partial-snapshot-requires-retry" ]; then
+            printf '%s\n' "The snapshot is partial. Use operation ‘retry-last-failed’ to recheck this SHA." >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'Publisher skipped safely because %s.\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -181,7 +185,7 @@ jobs:
         run: |
           printf '%s' 'Format personal POM overlay with upstream Prettier' > "$RUNNER_TEMP/publisher-build-step"
           set -o pipefail
-          ./node_modules/.bin/prettier --write pom.xml 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
+          ./node_modules/.bin/prettier --write pom.xml seed4j-*/pom.xml 2>&1 | tee "$RUNNER_TEMP/publisher-build.log"
 
       - name: Run applicable upstream lint
         id: upstream_lint
@@ -280,6 +284,7 @@ jobs:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           PUBLISHER_IDENTITY: ${{ needs.qualify.outputs.identity }}
+          PUBLISHER_OPERATION: ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'head' }}
         run: |
           printf '%s' 'Verify and deploy through the pinned Maven goal' > "$RUNNER_TEMP/publisher-deploy-step"
           set -o pipefail
@@ -343,7 +348,7 @@ jobs:
         run: node scripts/publication-cycle.cjs finish
 
       - name: Create, update, close, or skip the single failure issue
-        if: always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed') || needs.qualify.outputs.outcome == 'publish')
+        if: always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'retry-last-failed') || needs.qualify.outputs.outcome == 'publish' || needs.qualify.outputs.reason == 'partial-snapshot-requires-retry')
         env:
           BUILD_DIAGNOSTIC: ${{ needs.build.outputs.diagnostic }}
           BUILD_RESULT: ${{ needs.build.result }}

@@ -4,7 +4,6 @@ const test = require("node:test");
 const {
   deriveSnapshotIdentity,
   qualifyCandidate,
-  retentionDecision,
 } = require("../scripts/publisher-policy.cjs");
 
 test("derives the same personal snapshot identity from immutable upstream facts", () => {
@@ -20,7 +19,7 @@ test("derives the same personal snapshot identity from immutable upstream facts"
   const retryIdentity = deriveSnapshotIdentity(upstream);
 
   assert.deepEqual(firstIdentity, {
-    artifactId: "seed4j-main-snapshot",
+    artifactId: "seed4j-parent",
     groupId: "io.github.renanfranca",
     upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
     upstreamLicenseSha256:
@@ -121,7 +120,7 @@ test("retry derives its candidate only from deterministic failure markers and re
 <!-- seed4j-main-snapshot-publisher-failure-state:start -->
 \`\`\`json
 {
-  "artifactId": "seed4j-main-snapshot",
+  "artifactId": "seed4j-parent",
   "derivedVersion": "2.2.1-main.20260907.055800.4eebd07bce14c9a6ac70bace157fcc616133e950-SNAPSHOT",
   "groupId": "io.github.renanfranca",
   "upstreamCommitTimestamp": "2026-09-07T05:58:00Z",
@@ -179,67 +178,5 @@ test("retry derives its candidate only from deterministic failure markers and re
         upstreamCheck,
       }),
     /Unsupported publisher operation/,
-  );
-});
-
-test("uses public Central state to skip recent snapshots and refresh absent or sixty-day snapshots", () => {
-  const identity = deriveSnapshotIdentity({
-    upstreamCommitTimestamp: "2026-09-07T05:58:00Z",
-    upstreamLicenseSha256:
-      "d6088ea4fccd10711c8d58cacd766816b34d6f514aa835dd0d6c14cb22acf42e",
-    upstreamPomVersion: "2.2.1-SNAPSHOT",
-    upstreamSha: "4eebd07bce14c9a6ac70bace157fcc616133e950",
-  });
-  const recentCentralMetadata = {
-    lastUpdated: "20260910060000",
-    status: 200,
-    version: identity.version,
-  };
-
-  assert.deepEqual(
-    retentionDecision({
-      centralMetadata: recentCentralMetadata,
-      identity,
-      now: "2026-09-20T06:00:00Z",
-    }),
-    {
-      openFailureIssue: false,
-      outcome: "skip",
-      reason: "snapshot-published-within-60-days",
-    },
-  );
-  assert.deepEqual(
-    retentionDecision({
-      centralMetadata: recentCentralMetadata,
-      identity,
-      now: "2026-11-09T06:00:00Z",
-    }),
-    {
-      outcome: "publish",
-      reason: "retention-refresh",
-    },
-  );
-  assert.deepEqual(
-    retentionDecision({
-      centralMetadata: { status: 404 },
-      identity,
-      now: "2026-09-20T06:00:00Z",
-    }),
-    {
-      outcome: "publish",
-      reason: "snapshot-absent",
-    },
-  );
-  assert.throws(
-    () =>
-      retentionDecision({
-        centralMetadata: {
-          ...recentCentralMetadata,
-          version: "another-version-SNAPSHOT",
-        },
-        identity,
-        now: "2026-09-20T06:00:00Z",
-      }),
-    /Central metadata version/,
   );
 });

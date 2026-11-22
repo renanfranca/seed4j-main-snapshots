@@ -269,3 +269,73 @@ test("ineligible manual retries flow through reporting without reading or changi
     assert.equal(calls[0].options.method, undefined);
   }
 });
+
+test("records the files already visible when a modular upload leaves a partial publication", async () => {
+  const modularIdentity = { ...identity, artifactId: "seed4j-parent" };
+  const publicVersion = identity.version.replace(
+    "SNAPSHOT",
+    "20260911.100000-1",
+  );
+  const calls = [];
+
+  const result = await reportPublisherResult({
+    buildResult: "success",
+    deployResult: "failure",
+    deployDiagnostic: "Maven deploy failed on seed4j-api",
+    encodedIdentity: encodeIdentity(modularIdentity),
+    now: "2026-09-11T10:20:30Z",
+    outcome: "publish",
+    repository: "renanfranca/seed4j-main-snapshots",
+    request: async (url, options = {}) => {
+      calls.push({ url, options });
+      return options.method === "POST"
+        ? { status: 201, body: { number: 55 } }
+        : { status: 200, body: [] };
+    },
+    publicRequest: async (url, method) => {
+      if (method === "HEAD") return { status: 200 };
+      if (!url.includes("/seed4j-parent/")) return { status: 404 };
+      return {
+        status: 200,
+        body: `<metadata><groupId>io.github.renanfranca</groupId><artifactId>seed4j-parent</artifactId><version>${identity.version}</version><versioning><snapshotVersions><snapshotVersion><extension>pom</extension><value>${publicVersion}</value><updated>20260911100000</updated></snapshotVersion></snapshotVersions></versioning></metadata>`,
+      };
+    },
+    workflowRunUrl:
+      "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/123",
+  });
+
+  assert.equal(result.action, "create");
+  const issue = calls[1].options.body.body;
+  assert.match(issue, /Maven deploy failed on seed4j-api/);
+  assert.match(issue, /Public files 1\/9: seed4j-parent.pom/);
+  assert.match(issue, /retry-last-failed/);
+  assert.match(issue, new RegExp(identity.upstreamSha));
+});
+
+test("closes a retry when qualification already confirmed all nine files", async () => {
+  const modularIdentity = { ...identity, artifactId: "seed4j-parent" };
+  const calls = [];
+
+  const result = await reportPublisherResult({
+    encodedIdentity: encodeIdentity(modularIdentity),
+    now: "2026-09-11T10:20:30Z",
+    outcome: "skip",
+    reason: "snapshot-published-within-60-days",
+    repository: "renanfranca/seed4j-main-snapshots",
+    request: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (!options.method)
+        return {
+          status: 200,
+          body: [
+            { number: 56, title: "[publisher] Seed4J main snapshot failure" },
+          ],
+        };
+      return { status: options.method === "POST" ? 201 : 200 };
+    },
+  });
+
+  assert.deepEqual(result, { action: "close", issueNumber: 56 });
+  assert.equal(calls[1].options.method, "POST");
+  assert.equal(calls[2].options.body.state, "closed");
+});

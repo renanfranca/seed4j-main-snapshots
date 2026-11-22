@@ -42,7 +42,13 @@ ${FAILURE_STATE_END}
 - Stage: \`${failure.stage}\`
 - Workflow run: ${failure.workflowRunUrl}
 ${identitySummary}
-- Diagnostic: ${sanitizeDiagnostic(failure.diagnostic)}
+- Diagnostic: ${sanitizeDiagnostic(failure.diagnostic)}${
+    failure.publicObservation
+      ? `
+- ${sanitizeDiagnostic(failure.publicObservation)}
+- Use \`retry-last-failed\` to check Sonatype again and recover this SHA.`
+      : ""
+  }
 ${retryState}
 
 ## Failure history
