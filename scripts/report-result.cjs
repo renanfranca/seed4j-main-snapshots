@@ -65,6 +65,7 @@ async function reportPublisherResult({
       return Object.freeze({ action: "none", reason: "no-open-failure" });
     }
     const resolution = successIssueResolution({
+      existingBody: issue.body,
       identity,
       issueNumber: issue.number,
     });

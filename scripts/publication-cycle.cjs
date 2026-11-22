@@ -20,6 +20,7 @@ const WEEKLY = "17 6 * * 1";
 const DAILY = "17 6 * * 0,2-6";
 const HOURLY = "41 * * * *";
 const WINDOW = 48 * 60 * 60 * 1000;
+const PARTIAL_SNAPSHOT_REQUIRES_RETRY = "partial-snapshot-requires-retry";
 
 async function beginCycle({
   config,
@@ -199,14 +200,24 @@ async function completeCycle({
     Date.parse(requestedCheck) < Date.parse(state.deadline);
   const action = retryWithinWindow
     ? "retry"
-    : finalAction({ outcome, buildResult, deployResult, deadlinePassed });
+    : finalAction({
+        outcome,
+        reason,
+        buildResult,
+        deployResult,
+        deadlinePassed,
+      });
   const blocker = sanitizeDiagnostic(
-    action === "build-failed"
-      ? buildDiagnostic || "Publisher build failed; inspect the linked run"
-      : action === "deployment-unconfirmed"
-        ? deployDiagnostic ||
-          "Deploy result is unconfirmed; inspect public artifacts"
-        : reason || action,
+    {
+      "build-failed":
+        buildDiagnostic || "Publisher build failed; inspect the linked run",
+      "deployment-unconfirmed":
+        deployDiagnostic ||
+        "Deploy result is unconfirmed; inspect public artifacts",
+      [PARTIAL_SNAPSHOT_REQUIRES_RETRY]:
+        "Use the manual retry-last-failed operation to recover the recorded SHA",
+    }[action] ??
+      (reason || action),
   );
   const sha = /^[0-9a-f]{40}$/.test(upstreamSha ?? "")
     ? upstreamSha
@@ -291,7 +302,15 @@ function blockerKey(action, reason) {
   return reason.replace(/:.*$/, "");
 }
 
-function finalAction({ outcome, buildResult, deployResult, deadlinePassed }) {
+function finalAction({
+  outcome,
+  reason,
+  buildResult,
+  deployResult,
+  deadlinePassed,
+}) {
+  if (outcome === "skip" && reason === PARTIAL_SNAPSHOT_REQUIRES_RETRY)
+    return reason;
   if (
     outcome === "publish" &&
     buildResult === "success" &&
@@ -391,7 +410,13 @@ function renderAttempt(attempt) {
 }
 
 function renderFinal(attempt) {
-  return `Outcome: **${attempt.decision}**. ${attempt.blocker}. Commit ${attempt.sha} ${attempt.decision === "published" ? "was published" : attempt.decision === "skipped" ? "was dispensed by eligibility policy" : "could not be published"}.\n\n${renderAttempt(attempt)}`;
+  const verdict =
+    {
+      published: "was published",
+      skipped: "was dispensed by eligibility policy",
+      [PARTIAL_SNAPSHOT_REQUIRES_RETRY]: "has a partial snapshot",
+    }[attempt.decision] ?? "could not be published";
+  return `Outcome: **${attempt.decision}**. ${attempt.blocker}. Commit ${attempt.sha} ${verdict}.\n\n${renderAttempt(attempt)}`;
 }
 
 function plannedTime(actual, schedule) {

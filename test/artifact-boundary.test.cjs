@@ -387,64 +387,18 @@ test("refuses a historical monolithic identity at the deployment boundary", (con
 });
 
 test("protected deployment confirms all nine files before success", async (context) => {
-  const { checkoutDirectory, candidateDirectory, temp } = modularBuild(context);
-  collectQualifiedCandidate({
-    checkoutDirectory,
-    outputDirectory: candidateDirectory,
-    identity,
-  });
-  const settingsPath = join(temp, "settings.xml");
-  const log = join(temp, "maven.log");
-  writeFileSync(
-    join(temp, "mvnw"),
-    String.raw`#!/usr/bin/env node
-import { appendFileSync, readFileSync, statSync } from "node:fs";
-const settings = process.argv.find((arg) => arg.startsWith("--settings=")).slice("--settings=".length);
-if (process.env.CENTRAL_PASSWORD || process.env.CENTRAL_USERNAME) process.exit(19);
-if ((statSync(settings).mode & 0o777) !== 0o600 || !readFileSync(settings, "utf8").includes("<password>password&amp;value</password>")) process.exit(20);
-appendFileSync(process.env.TEST_MAVEN_LOG, ".");
-`,
-    { mode: 0o755 },
-  );
+  const { publish, uploads, settingsPath } = protectedDeployment(context);
   const checked = [];
-  const updated = new Date()
-    .toISOString()
-    .replace(/[^0-9]/g, "")
-    .slice(0, 14);
-  const publicVersion = identity.version.replace(
-    "SNAPSHOT",
-    updated.slice(0, 8) + "." + updated.slice(8) + "-1",
-  );
+  const snapshot = publicSnapshot();
 
-  const result = await publishDeployment({
-    bundleDirectory: candidateDirectory,
-    encodedIdentity: encodeIdentity(identity),
-    environment: {
-      ...process.env,
-      TEST_MAVEN_LOG: log,
-      CENTRAL_USERNAME: "user",
-      CENTRAL_PASSWORD: "password&value",
-    },
-    publicationOperation: "head",
-    repositoryDirectory: temp,
-    settingsPath,
-    username: "user",
-    password: "password&value",
-    wait: async () => {},
-    publicRequest: async (url, method) => {
-      if (!existsSync(log)) return { status: 404 };
-      const [, artifactId] = /\/([^/]+)\/[^/]+\/[^/]+$/.exec(url);
-      if (method === "HEAD") {
-        checked.push(`${artifactId}.${url.split(".").at(-1)}`);
-        return { status: 200 };
-      }
-      const extensions =
-        artifactId === "seed4j-parent" ? ["pom"] : ["pom", "jar"];
-      return {
-        status: 200,
-        body: `<metadata><groupId>io.github.renanfranca</groupId><artifactId>${artifactId}</artifactId><version>${identity.version}</version><versioning><snapshotVersions>${extensions.map((extension) => `<snapshotVersion><extension>${extension}</extension><value>${publicVersion}</value><updated>${updated}</updated></snapshotVersion>`).join("")}</snapshotVersions></versioning></metadata>`,
-      };
-    },
+  const result = await publish(async (url, method) => {
+    if (uploads().length === 0) return { status: 404 };
+    if (method === "HEAD") {
+      const [, artifactId, extension] =
+        /\/([^/]+)\/[^/]+\/[^/]+\.(pom|jar)$/.exec(url);
+      checked.push(`${artifactId}.${extension}`);
+    }
+    return snapshot(url, method);
   });
 
   assert.equal(result.status, 0);
@@ -461,9 +415,188 @@ appendFileSync(process.env.TEST_MAVEN_LOG, ".");
     "seed4j-core-modules.jar",
   ]);
   assert.match(result.observation.summary, /Public files 9\/9/);
-  assert.equal(readFileSync(log, "utf8"), ".....");
+  assert.equal(uploads().length, 5);
   assert.equal(existsSync(settingsPath), false);
 });
+
+test("protected retry of a partial snapshot uploads all five components in order", async (context) => {
+  const { publish, uploads } = protectedDeployment(context);
+  const partial = publicSnapshot({
+    missing: [
+      "seed4j-engine.pom",
+      "seed4j-engine.jar",
+      "seed4j-test.pom",
+      "seed4j-test.jar",
+      "seed4j-core-modules.pom",
+      "seed4j-core-modules.jar",
+    ],
+  });
+  const complete = publicSnapshot();
+
+  const result = await publish(
+    (url, method) => (uploads().length === 0 ? partial : complete)(url, method),
+    { operation: "retry-last-failed" },
+  );
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(uploads(), [
+    "seed4j-parent",
+    "seed4j-api",
+    "seed4j-engine",
+    "seed4j-test",
+    "seed4j-core-modules",
+  ]);
+  assert.match(result.observation.summary, /Public files 9\/9/);
+});
+
+test("protected deployment of a recent complete snapshot uploads nothing", async (context) => {
+  const { publish, uploads, settingsPath } = protectedDeployment(context);
+
+  const result = await publish(publicSnapshot());
+
+  assert.equal(result.status, 0);
+  assert.match(result.observation.summary, /Public files 9\/9/);
+  assert.deepEqual(uploads(), []);
+  assert.equal(existsSync(settingsPath), false);
+});
+
+test("protected retention refresh waits for nine files inside the retention window", async (context) => {
+  const { publish, uploads } = protectedDeployment(context);
+  const fresh = centralTime(new Date());
+  const expired = centralTime(new Date(Date.now() - 61 * 24 * 60 * 60 * 1000));
+  const staleFile = "seed4j-core-modules.jar";
+  const priorPublication = publicSnapshot({ updated: expired });
+  const afterUpload = [
+    publicSnapshot({
+      updated: (file) => (file === staleFile ? expired : fresh),
+    }),
+    publicSnapshot({ missing: [staleFile] }),
+    publicSnapshot({ updated: fresh }),
+  ];
+  const waits = [];
+
+  const result = await publish(
+    (url, method) =>
+      (uploads().length === 0 ? priorPublication : afterUpload[waits.length])(
+        url,
+        method,
+      ),
+    { wait: async (milliseconds) => waits.push(milliseconds) },
+  );
+
+  assert.equal(result.status, 0);
+  assert.match(result.observation.summary, /Public files 9\/9/);
+  assert.deepEqual(waits, [15_000, 15_000]);
+  assert.equal(uploads().length, 5);
+});
+
+test("protected retention refresh fails when the ninth file stays unavailable after polling", async (context) => {
+  const { publish, uploads, settingsPath } = protectedDeployment(context);
+  const expired = centralTime(new Date(Date.now() - 61 * 24 * 60 * 60 * 1000));
+  const priorPublication = publicSnapshot({ updated: expired });
+  const incomplete = publicSnapshot({ missing: ["seed4j-core-modules.jar"] });
+  const waits = [];
+
+  await assert.rejects(
+    publish(
+      (url, method) =>
+        (uploads().length === 0 ? priorPublication : incomplete)(url, method),
+      { wait: async (milliseconds) => waits.push(milliseconds) },
+    ),
+    /Public snapshot confirmation failed\. Public files 8\/9/,
+  );
+
+  assert.deepEqual(waits, [15_000, 15_000, 15_000]);
+  assert.equal(uploads().length, 5);
+  assert.equal(existsSync(settingsPath), false);
+});
+
+function protectedDeployment(context) {
+  const { checkoutDirectory, candidateDirectory, temp } = modularBuild(context);
+  collectQualifiedCandidate({
+    checkoutDirectory,
+    outputDirectory: candidateDirectory,
+    identity,
+  });
+  const settingsPath = join(temp, "settings.xml");
+  const log = join(temp, "maven.log");
+  writeFileSync(
+    join(temp, "mvnw"),
+    String.raw`#!/usr/bin/env node
+import { appendFileSync, readFileSync, statSync } from "node:fs";
+const settings = process.argv.find((arg) => arg.startsWith("--settings=")).slice("--settings=".length);
+if (process.env.CENTRAL_PASSWORD || process.env.CENTRAL_USERNAME) process.exit(19);
+if ((statSync(settings).mode & 0o777) !== 0o600 || !readFileSync(settings, "utf8").includes("<password>password&amp;value</password>")) process.exit(20);
+const artifact = process.argv.find((arg) => arg.startsWith("-DartifactId="));
+appendFileSync(process.env.TEST_MAVEN_LOG, artifact.slice("-DartifactId=".length) + "\n");
+`,
+    { mode: 0o755 },
+  );
+  return {
+    publish: (
+      publicRequest,
+      { operation = "head", wait = async () => {} } = {},
+    ) =>
+      publishDeployment({
+        bundleDirectory: candidateDirectory,
+        encodedIdentity: encodeIdentity(identity),
+        environment: {
+          ...process.env,
+          TEST_MAVEN_LOG: log,
+          CENTRAL_USERNAME: "user",
+          CENTRAL_PASSWORD: "password&value",
+        },
+        publicationOperation: operation,
+        repositoryDirectory: temp,
+        settingsPath,
+        username: "user",
+        password: "password&value",
+        wait,
+        publicRequest,
+      }),
+    uploads: () =>
+      existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [],
+    settingsPath,
+  };
+}
+
+function centralTime(date) {
+  return date
+    .toISOString()
+    .replace(/[^0-9]/g, "")
+    .slice(0, 14);
+}
+
+function publicSnapshot({
+  updated = centralTime(new Date()),
+  missing = [],
+} = {}) {
+  return async (url, method) => {
+    const [, artifactId] = /\/([^/]+)\/[^/]+\/[^/]+$/.exec(url);
+    if (method === "HEAD") {
+      const file = `${artifactId}.${url.split(".").at(-1)}`;
+      return { status: missing.includes(file) ? 404 : 200 };
+    }
+    const extensions =
+      artifactId === "seed4j-parent" ? ["pom"] : ["pom", "jar"];
+    return {
+      status: 200,
+      body: `<metadata><groupId>io.github.renanfranca</groupId><artifactId>${artifactId}</artifactId><version>${identity.version}</version><versioning><snapshotVersions>${extensions
+        .map((extension) => {
+          const updatedAt =
+            typeof updated === "function"
+              ? updated(`${artifactId}.${extension}`)
+              : updated;
+          const publishedVersion = identity.version.replace(
+            "SNAPSHOT",
+            updatedAt.slice(0, 8) + "." + updatedAt.slice(8) + "-1",
+          );
+          return `<snapshotVersion><extension>${extension}</extension><value>${publishedVersion}</value><updated>${updatedAt}</updated></snapshotVersion>`;
+        })
+        .join("")}</snapshotVersions></versioning></metadata>`,
+    };
+  };
+}
 
 function modularBuild(context) {
   const temp = mkdtempSync(join(tmpdir(), "seed4j-modular-candidate-"));

@@ -6,7 +6,18 @@ const {
   qualifyPublication,
 } = require("../scripts/qualify-candidate.cjs");
 
+const {
+  beginCycle,
+  completeCycle,
+} = require("../scripts/publication-cycle.cjs");
+const {
+  encodeIdentity,
+  identityFromFailureState,
+} = require("../scripts/publisher-policy.cjs");
+const { reportPublisherResult } = require("../scripts/report-result.cjs");
+
 const sha = "4eebd07bce14c9a6ac70bace157fcc616133e950";
+const newerSha = "d9a17ccb377e28591bcfd543f17552ad54c42b88";
 const baseConfig = Object.freeze({
   centralTokenExpiresOn: "2027-09-01",
   pilotCompleted: false,
@@ -256,19 +267,28 @@ test("a failure before upstream identity exists becomes an explicit nonretryable
   assert.equal("upstreamSha" in result, false);
 });
 
-function officialHeadRequests({ centralStatus, workflowConclusion }) {
+function officialHeadRequests({
+  centralStatus,
+  workflowConclusion,
+  upstreamSha = sha,
+  workflowStatus = "completed",
+}) {
   return [
-    ["/repos/seed4j/seed4j/commits/main", 200, commit()],
-    [`/repos/seed4j/seed4j/contents/pom.xml?ref=${sha}`, 200, pomContent()],
+    ["/repos/seed4j/seed4j/commits/main", 200, commit(upstreamSha)],
     [
-      `/repos/seed4j/seed4j/contents/LICENSE.txt?ref=${sha}`,
+      `/repos/seed4j/seed4j/contents/pom.xml?ref=${upstreamSha}`,
+      200,
+      pomContent(),
+    ],
+    [
+      `/repos/seed4j/seed4j/contents/LICENSE.txt?ref=${upstreamSha}`,
       200,
       licenseContent(),
     ],
     [
       /\/repos\/seed4j\/seed4j\/actions\/workflows\/github-actions.yml\/runs\?/,
       200,
-      workflowRuns(workflowConclusion),
+      workflowRuns(workflowConclusion, upstreamSha, workflowStatus),
     ],
     ...(centralStatus === undefined
       ? []
@@ -294,8 +314,11 @@ function absentSnapshotRequests() {
   ]);
 }
 
-function commit() {
-  return { commit: { committer: { date: "2026-09-07T05:58:00Z" } }, sha };
+function commit(upstreamSha = sha) {
+  return {
+    commit: { committer: { date: "2026-09-07T05:58:00Z" } },
+    sha: upstreamSha,
+  };
 }
 
 function pomContent(artifactId = "seed4j-parent") {
@@ -310,14 +333,14 @@ function licenseContent() {
   };
 }
 
-function workflowRuns(conclusion) {
+function workflowRuns(conclusion, upstreamSha = sha, status = "completed") {
   return {
     workflow_runs: [
       {
         conclusion,
         event: "push",
-        head_sha: sha,
-        status: "completed",
+        head_sha: upstreamSha,
+        status,
       },
     ],
   };
@@ -1185,10 +1208,6 @@ test("an invalid main SHA rejects resolution without approving provenance or lat
 });
 
 test("cycle reports render preserved approvals, the Central blocker, and unperformed build and deploy", async () => {
-  const {
-    beginCycle,
-    completeCycle,
-  } = require("../scripts/publication-cycle.cjs");
   const repository = "renanfranca/seed4j-main-snapshots";
   let issueBody;
   const comments = [];
@@ -1572,12 +1591,343 @@ test("uses the oldest confirmed file of a complete modular publication for reten
         : refreshUpstream(url),
   });
   assert.equal(elapsed.reason, "retention-refresh");
-
-  function snapshotMetadata({ artifactId, extensions, version, updated }) {
-    const timestamp = updated.slice(0, 8) + "." + updated.slice(8);
-    return `<metadata><groupId>io.github.renanfranca</groupId><artifactId>${artifactId}</artifactId><version>${version}</version><versioning><snapshotVersions>${extensions.map((extension) => `<snapshotVersion><extension>${extension}</extension><value>${version.replace("SNAPSHOT", timestamp + "-1")}</value><updated>${updated}</updated></snapshotVersion>`).join("")}</snapshotVersions><lastUpdated>20261101000000</lastUpdated></versioning></metadata>`;
-  }
 });
+
+function snapshotMetadata({ artifactId, extensions, version, updated }) {
+  const timestamp = updated.slice(0, 8) + "." + updated.slice(8);
+  return `<metadata><groupId>io.github.renanfranca</groupId><artifactId>${artifactId}</artifactId><version>${version}</version><versioning><snapshotVersions>${extensions.map((extension) => `<snapshotVersion><extension>${extension}</extension><value>${version.replace("SNAPSHOT", timestamp + "-1")}</value><updated>${updated}</updated></snapshotVersion>`).join("")}</snapshotVersions><lastUpdated>20261101000000</lastUpdated></versioning></metadata>`;
+}
+
+test("head closes a partial snapshot cycle and records the same SHA for manual retry", async () => {
+  const { issues, request } = publisherIssues();
+  const invocation = cycleInvocation();
+  const repository = invocation.publisherRepository;
+  const { issueNumber } = await startManualHeadCycle(request);
+  const publicRequest = partialSnapshotRequest(sha);
+  const checked = await qualifyPartialHead(
+    { ...invocation, cycleIssueNumber: issueNumber },
+    publicRequest,
+  );
+  const outcome = {
+    ...checked,
+    encodedIdentity: encodeIdentity(checked.identity),
+    now: invocation.now,
+    repository,
+    request,
+    workflowRunUrl: `https://github.com/${repository}/actions/runs/34`,
+  };
+
+  const cycle = await completeCycle({ ...outcome, issueNumber });
+  const failure = await reportPublisherResult({ ...outcome, publicRequest });
+
+  assert.equal(checked.outcome, "skip");
+  assert.equal(cycle.action, "partial-snapshot-requires-retry");
+  const cycleIssue = issues.get(issueNumber);
+  assert.equal(cycleIssue.state, "closed");
+  const finalReport = cycleIssue.body.split("## Final report")[1];
+  assert.match(finalReport, /Outcome: \*\*partial-snapshot-requires-retry\*\*/);
+  assert.ok(finalReport.includes(`Commit ${sha} has a partial snapshot`));
+  assert.match(
+    finalReport,
+    /Public files 3\/9: seed4j-parent\.pom, seed4j-api\.pom, seed4j-api\.jar/,
+  );
+  assert.match(finalReport, /retry-last-failed/);
+  assert.match(finalReport, /Next check: None/);
+  assert.match(finalReport, /\| Publisher build \| Not evaluated \|/);
+  assert.match(finalReport, /\| Deploy\/public artifacts \| Not evaluated \|/);
+  const failureIssue = issues.get(failure.issueNumber);
+  assert.equal(failureIssue.state, "open");
+  assert.equal(identityFromFailureState(failureIssue.body).upstreamSha, sha);
+  assert.match(
+    failureIssue.body,
+    /Public files 3\/9: seed4j-parent\.pom, seed4j-api\.pom, seed4j-api\.jar/,
+  );
+});
+
+test("a confirmed newer snapshot closes the partial failure as a replacement", async () => {
+  const { issues, request } = publisherIssues();
+  const { issueNumber } = await recordPartialHead(request);
+  const qualified = await qualificationResult({
+    ...cycleInvocation(),
+    request: queuedRequest(
+      officialHeadRequests({
+        centralStatus: 404,
+        upstreamSha: newerSha,
+        workflowConclusion: "success",
+      }),
+    ),
+  });
+
+  const result = await reportQualifiedAttempt(qualified, request, {
+    buildResult: "success",
+    deployResult: "success",
+  });
+  const retry = await qualifyRecordedFailure(request, sha);
+
+  assert.equal(qualified.identity.upstreamSha, newerSha);
+  assert.deepEqual(result, { action: "close", issueNumber });
+  assert.equal(issues.size, 1);
+  const issue = issues.get(issueNumber);
+  assert.equal(issue.state, "closed");
+  assert.equal(issue.state_reason, "completed");
+  assert.equal(issue.comments.length, 1);
+  assert.equal(retry.reason, "no-retryable-publication");
+  assert.ok(
+    issue.comments[0].includes(
+      `upstream SHA \`${newerSha}\` superseded the recorded failed SHA \`${sha}\``,
+    ),
+  );
+});
+
+test("confirming all nine files on retry closes the failure as recovery of the recorded SHA", async () => {
+  const { issues, request } = publisherIssues();
+  const { issueNumber } = await recordPartialHead(request);
+  const publicRequest = snapshotRequest(sha, {
+    "seed4j-parent": ["pom"],
+    "seed4j-api": ["pom", "jar"],
+    "seed4j-engine": ["pom", "jar"],
+    "seed4j-test": ["pom", "jar"],
+    "seed4j-core-modules": ["pom", "jar"],
+  });
+
+  const retry = await qualifyRecordedFailure(request, sha, publicRequest);
+  const result = await reportQualifiedAttempt(retry, request, {
+    buildResult: "skipped",
+    deployResult: "skipped",
+  });
+
+  assert.equal(retry.reason, "snapshot-published-within-60-days");
+  assert.equal(retry.identity.upstreamSha, sha);
+  assert.deepEqual(result, { action: "close", issueNumber });
+  const issue = issues.get(issueNumber);
+  assert.equal(issue.state, "closed");
+  assert.equal(issue.comments.length, 1);
+  assert.ok(
+    issue.comments[0].includes(
+      `Recovered the recorded upstream SHA \`${sha}\``,
+    ),
+  );
+});
+
+test("a newer SHA waiting for official CI leaves manual retry pointed at the partial SHA", async () => {
+  const { issues, request } = publisherIssues();
+  const { issueNumber: failureNumber } = await recordPartialHead(request);
+  const existingFailure = issues.get(failureNumber).body;
+  const invocation = cycleInvocation();
+  const repository = invocation.publisherRepository;
+  const { issueNumber } = await startManualHeadCycle(request);
+  const qualified = await qualificationResult({
+    ...invocation,
+    cycleIssueNumber: issueNumber,
+    request: queuedRequest(
+      officialHeadRequests({
+        upstreamSha: newerSha,
+        workflowStatus: "in_progress",
+      }),
+    ),
+  });
+
+  const cycle = await completeCycle({
+    ...qualified,
+    issueNumber,
+    now: invocation.now,
+    repository,
+    request,
+    workflowRunUrl: `https://github.com/${repository}/actions/runs/36`,
+  });
+  const retry = await qualifyRecordedFailure(
+    request,
+    sha,
+    partialSnapshotRequest(sha),
+  );
+
+  assert.equal(qualified.upstreamSha, newerSha);
+  assert.equal(cycle.action, "retry");
+  const cycleIssue = issues.get(issueNumber);
+  assert.equal(cycleIssue.state, "open");
+  assert.match(cycleIssue.body, /Official run in progress/);
+  assert.ok(cycleIssue.body.includes(newerSha));
+  const failureIssue = issues.get(failureNumber);
+  assert.equal(failureIssue.state, "open");
+  assert.equal(failureIssue.body, existingFailure);
+  assert.equal(retry.reason, "partial-snapshot-retry");
+  assert.equal(retry.identity.upstreamSha, sha);
+});
+
+for (const [stage, buildResult, deployResult] of [
+  ["build", "failure", "skipped"],
+  ["deploy", "success", "failure"],
+]) {
+  test(`a newer ${stage} failure replaces the partial SHA as the manual retry target`, async () => {
+    const { issues, request } = publisherIssues();
+    const { issueNumber } = await recordPartialHead(request);
+    const qualified = await qualificationResult({
+      ...cycleInvocation(),
+      request: queuedRequest(
+        officialHeadRequests({
+          centralStatus: 404,
+          upstreamSha: newerSha,
+          workflowConclusion: "success",
+        }),
+      ),
+    });
+
+    const result = await reportQualifiedAttempt(qualified, request, {
+      buildResult,
+      deployResult,
+      publicRequest: async () => ({ status: 404 }),
+    });
+    const retry = await qualifyRecordedFailure(request, newerSha);
+
+    assert.deepEqual(result, { action: "update", issueNumber });
+    assert.equal(issues.size, 1);
+    const failureIssue = issues.get(issueNumber);
+    assert.equal(failureIssue.state, "open");
+    assert.match(failureIssue.body, new RegExp(`Stage: \`${stage}\``));
+    assert.equal(
+      identityFromFailureState(failureIssue.body).upstreamSha,
+      newerSha,
+    );
+    assert.equal(retry.identity.upstreamSha, newerSha);
+    assert.equal(retry.outcome, "publish");
+  });
+}
+
+function startManualHeadCycle(request) {
+  const invocation = cycleInvocation();
+  return beginCycle({
+    ...invocation,
+    event: "workflow_dispatch",
+    schedule: undefined,
+    repository: invocation.publisherRepository,
+    request,
+  });
+}
+
+function qualifyRecordedFailure(issueRequest, expectedSha, publicRequest) {
+  const [, pom, license, workflow, ...publicCheck] = officialHeadRequests({
+    centralStatus: publicRequest ? undefined : 404,
+    upstreamSha: expectedSha,
+    workflowConclusion: "success",
+  });
+  const upstream = queuedRequest([
+    [`/repos/seed4j/seed4j/commits/${expectedSha}`, 200, commit(expectedSha)],
+    pom,
+    license,
+    [
+      `/repos/seed4j/seed4j/compare/${expectedSha}...main`,
+      200,
+      { status: "ahead" },
+    ],
+    workflow,
+    ...publicCheck,
+  ]);
+  return qualificationResult({
+    ...cycleInvocation(),
+    cycleIssueNumber: undefined,
+    event: "workflow_dispatch",
+    operation: "retry-last-failed",
+    request: (url, method) => {
+      if (url.includes("/issues?")) return issueRequest(url);
+      if (publicRequest && url.includes("central.sonatype.com"))
+        return publicRequest(url, method);
+      return upstream(url);
+    },
+  });
+}
+
+async function recordPartialHead(request) {
+  const publicRequest = partialSnapshotRequest(sha);
+  const qualified = await qualifyPartialHead(cycleInvocation(), publicRequest);
+  return reportQualifiedAttempt(qualified, request, { publicRequest });
+}
+
+function qualifyPartialHead(invocation, publicRequest) {
+  const upstream = queuedRequest(
+    officialHeadRequests({ workflowConclusion: "success" }),
+  );
+  return qualificationResult({
+    ...invocation,
+    request: (url, method) =>
+      url.includes("central.sonatype.com")
+        ? publicRequest(url, method)
+        : upstream(url),
+  });
+}
+
+function reportQualifiedAttempt(qualification, request, jobs) {
+  const { now, publisherRepository: repository } = cycleInvocation();
+  return reportPublisherResult({
+    ...qualification,
+    encodedIdentity: encodeIdentity(qualification.identity),
+    now,
+    repository,
+    request,
+    workflowRunUrl: `https://github.com/${repository}/actions/runs/35`,
+    ...jobs,
+  });
+}
+
+function partialSnapshotRequest(upstreamSha) {
+  return snapshotRequest(upstreamSha, {
+    "seed4j-parent": ["pom"],
+    "seed4j-api": ["pom", "jar"],
+  });
+}
+
+function snapshotRequest(upstreamSha, filesByModule) {
+  const version = `2.2.1-main.20260907.055800.${upstreamSha}-SNAPSHOT`;
+  return async (url, method) => {
+    const [, artifactId, requestedVersion] = /\/([^/]+)\/([^/]+)\/[^/]+$/.exec(
+      url,
+    );
+    assert.equal(requestedVersion, version);
+    const extensions = filesByModule[artifactId];
+    if (!extensions) return { status: 404 };
+    if (method === "HEAD") return { status: 200 };
+    return {
+      status: 200,
+      body: snapshotMetadata({
+        artifactId,
+        extensions,
+        version,
+        updated: "20260928100000",
+      }),
+    };
+  };
+}
+
+function publisherIssues() {
+  const issues = new Map();
+  const request = async (url, { method = "GET", body } = {}) => {
+    const path = new URL(url).pathname;
+    if (method === "POST" && path.endsWith("/issues")) {
+      const number = issues.size + 52;
+      issues.set(number, { ...body, number, state: "open", comments: [] });
+      return { status: 201, body: { number } };
+    }
+    if (path.endsWith("/issues")) {
+      const label = new URL(url).searchParams.get("labels");
+      return {
+        status: 200,
+        body: [...issues.values()].filter(
+          (issue) =>
+            issue.state === "open" && (!label || issue.labels?.includes(label)),
+        ),
+      };
+    }
+    const [, number, comments] = /\/issues\/(\d+)(\/comments)?$/.exec(path);
+    const issue = issues.get(Number(number));
+    if (!issue) return { status: 404 };
+    if (comments && method === "POST") {
+      issue.comments.push(body.body);
+      return { status: 201, body: {} };
+    }
+    if (method === "PATCH") Object.assign(issue, body);
+    return { status: 200, body: issue };
+  };
+  return { issues, request };
+}
 
 test("reserves a partial snapshot for a retry of its recorded SHA after a fresh public check", async () => {
   const version =
