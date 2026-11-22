@@ -39,7 +39,10 @@ Sources and Javadoc JARs are not published. The server participates in reactor v
 The publisher checks Sonatype metadata and confirms each of the nine timestamped files. A complete publication
 less than 60 days old is skipped. Its age starts at the oldest confirmed file, so refreshing individual components
 cannot extend the age of the whole set. At 60 days the set is eligible for refresh. A fully absent set is eligible
-for publication. A partial set is eligible only through `retry-last-failed` for the recorded SHA.
+for publication. A partial set is eligible only through `retry-last-failed` for the recorded SHA. The protected
+deploy checks the set again before uploading. It skips uploads if all nine files are already within the retention
+window. After uploading, it confirms success only when Sonatype serves all nine files and the oldest is less than
+60 days old.
 
 ## Credential boundary
 
@@ -158,16 +161,20 @@ HTTP 503 and rate limits retain these observations and schedule a retry respecti
 Central metadata retains the same approvals but ends qualification definitively. An expired token leaves official
 CI and retention unassessed because cycle qualification checks the token before querying official CI.
 
-The issue body keeps the latest attempt and bounded cycle state; comments preserve the full attempt history. A comment
-mentions `@renanfranca` only when the SHA, blocker, or final outcome changes. The final issue is closed. A publisher build failure closes the cycle and creates or updates the separate
-`publisher-failure` issue. After a failed or ambiguous deploy, reporting records which of the nine files Sonatype confirms and closes the cycle.
-A partial set requires an explicit retry.
+The issue body keeps the latest attempt and bounded cycle state. Comments preserve the full attempt history and
+mention `@renanfranca` when the SHA, blocker, or final outcome changes. A publisher build failure closes the cycle
+and records the failing SHA in the separate `publisher-failure` issue. After a failed or ambiguous deploy, reporting
+lists the files Sonatype confirms and closes the cycle.
 
-Use manual `head` to recheck the current official `main`; it starts or joins a publication cycle and evaluates that
-current SHA. Use `retry-last-failed` only to retry a publication with a recorded immutable identity in the sole open
-`publisher-failure` issue. The retry re-fetches provenance, verifies reachability, requires successful official CI for
-the recorded SHA, and checks the token and the current public state of all nine files. If only part is visible,
-the retry rebuilds and resends the same version in parent-first order. If the complete set is already within its
+When `head` finds a partial set, the cycle closes with outcome `partial-snapshot-requires-retry`. Its final report
+shows the full SHA, the confirmed file count and names, and the manual `retry-last-failed` operation. The build and
+deploy jobs are skipped for this attempt. The sole open `publisher-failure` issue records the partial SHA for retry.
+
+Use manual `head` to start or join a publication cycle for the current official `main`. Use `retry-last-failed` to
+retry the SHA recorded in the sole open `publisher-failure` issue. The retry re-fetches provenance, verifies
+reachability, requires successful official CI for the recorded SHA, and checks the token and the public state of
+all nine files. If only part is visible, the retry rebuilds the same version and sends `seed4j-parent`, `seed4j-api`,
+`seed4j-engine`, `seed4j-test`, and `seed4j-core-modules` in that order. If all nine files are already within the
 retention window, the retry closes the failure without another upload. A recorded monolithic
 `io.github.renanfranca:seed4j-main-snapshot` candidate is ineligible. Use `head` to qualify the modular reactor.
 
@@ -206,8 +213,14 @@ mentions and Markdown links cannot activate, while the issue template retains it
 Dispatch `retry-last-failed` only after correcting the trusted publisher or external outage and checking the cycle
 report and public artifacts. Retry refuses free-form
 SHAs and requires exactly one marked issue, re-fetches and re-derives the official identity, confirms reachability from
-official `main`, and again requires successful official CI. A successful retry or newer current publication closes the
-failure issue.
+official `main`, and again requires successful official CI.
+
+The issue tracks the most recent recorded failure. If SHA A is partial and SHA B is still waiting for official CI,
+`retry-last-failed` still selects A. If B fails during the publisher build or deploy, the publisher updates the same
+issue to record B, and the next manual retry selects B. Once all nine files are confirmed, the closing comment
+reports recovery if the confirmed SHA matches the recorded SHA. If B completes publication while the issue still
+records A, the comment names both SHAs and states that B superseded A. An older issue with a missing or unreadable
+identity uses the generic closing comment.
 
 Token-rotation reporting reads only the recorded expiry. It opens or updates one `publisher-token-rotation` issue 30
 days before expiry and closes an obsolete warning after the maintainer rotates the token and records the new date.

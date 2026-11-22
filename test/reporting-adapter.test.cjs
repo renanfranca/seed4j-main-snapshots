@@ -180,45 +180,57 @@ test("untrusted diagnostics cannot mention arbitrary accounts or create Markdown
   assert.match(body, /Central login/);
 });
 
-test("successful publication comments on and closes the sole open failure issue", async () => {
-  const calls = [];
-  const request = async (url, options = {}) => {
-    calls.push({ options, url });
-    if (url.includes("?state=open")) {
-      return {
-        body: [
-          {
-            body: "old body",
-            number: 42,
-            title: "[publisher] Seed4J main snapshot failure",
-          },
-        ],
-        status: 200,
-      };
-    }
-    return { body: {}, status: options.method === "POST" ? 201 : 200 };
-  };
+for (const [description, body] of [
+  ["missing", "old body"],
+  [
+    "unreadable",
+    "<!-- seed4j-main-snapshot-publisher-failure-state:start -->\ninvalid persisted state",
+  ],
+]) {
+  test(`successful publication uses the generic closure when the legacy identity is ${description}`, async () => {
+    const calls = [];
+    const request = async (url, options = {}) => {
+      calls.push({ options, url });
+      if (url.includes("?state=open")) {
+        return {
+          body: [
+            {
+              body,
+              number: 42,
+              title: "[publisher] Seed4J main snapshot failure",
+            },
+          ],
+          status: 200,
+        };
+      }
+      return { body: {}, status: options.method === "POST" ? 201 : 200 };
+    };
 
-  const result = await reportPublisherResult({
-    buildResult: "success",
-    deployResult: "success",
-    encodedIdentity: encodeIdentity(identity),
-    now: "2026-09-11T10:20:30Z",
-    outcome: "publish",
-    reason: "snapshot-absent",
-    repository: "renanfranca/seed4j-main-snapshots",
-    request,
-    workflowRunUrl:
-      "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/123",
-  });
+    const result = await reportPublisherResult({
+      buildResult: "success",
+      deployResult: "success",
+      encodedIdentity: encodeIdentity(identity),
+      now: "2026-09-11T10:20:30Z",
+      outcome: "publish",
+      reason: "snapshot-absent",
+      repository: "renanfranca/seed4j-main-snapshots",
+      request,
+      workflowRunUrl:
+        "https://github.com/renanfranca/seed4j-main-snapshots/actions/runs/123",
+    });
 
-  assert.deepEqual(result, { action: "close", issueNumber: 42 });
-  assert.match(calls[1].url, /issues\/42\/comments$/);
-  assert.deepEqual(calls[2].options.body, {
-    state: "closed",
-    state_reason: "completed",
+    assert.deepEqual(result, { action: "close", issueNumber: 42 });
+    assert.match(calls[1].url, /issues\/42\/comments$/);
+    assert.equal(
+      calls[1].options.body.body,
+      `Published ${identity.groupId}:${identity.artifactId}:${identity.version} from upstream ${identity.upstreamSha}; closing the publisher failure.`,
+    );
+    assert.deepEqual(calls[2].options.body, {
+      state: "closed",
+      state_reason: "completed",
+    });
   });
-});
+}
 
 test("ineligible manual retries flow through reporting without reading or changing any issue", async () => {
   const { qualificationResult } = require("../scripts/qualify-candidate.cjs");

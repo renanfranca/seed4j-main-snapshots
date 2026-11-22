@@ -1,6 +1,7 @@
 const {
   FAILURE_STATE_END,
   FAILURE_STATE_START,
+  identityFromFailureState,
 } = require("./publisher-policy.cjs");
 const FAILURE_HISTORY_START =
   "<!-- seed4j-main-snapshot-publisher-failure-history:start -->";
@@ -135,12 +136,24 @@ function sanitizeDiagnostic(value, { redactions = [] } = {}) {
     : `${diagnostic.slice(0, 237)}...`;
 }
 
-function successIssueResolution({ issueNumber, identity }) {
-  return Object.freeze({
-    action: "close",
-    comment: `Published ${identity.groupId}:${identity.artifactId}:${identity.version} from upstream ${identity.upstreamSha}; closing the publisher failure.`,
-    issueNumber,
-  });
+function successIssueResolution({ issueNumber, identity, existingBody }) {
+  const coordinate = `${identity.groupId}:${identity.artifactId}:${identity.version}`;
+  const failedSha = recordedFailureSha(existingBody);
+  let comment = `Published ${coordinate} from upstream ${identity.upstreamSha}; closing the publisher failure.`;
+  if (failedSha === identity.upstreamSha) {
+    comment = `Recovered the recorded upstream SHA \`${failedSha}\`. Confirmed ${coordinate}. Closing the publisher failure.`;
+  } else if (failedSha) {
+    comment = `Confirmed ${coordinate}. Publication of upstream SHA \`${identity.upstreamSha}\` superseded the recorded failed SHA \`${failedSha}\`. Closing the publisher failure.`;
+  }
+  return Object.freeze({ action: "close", comment, issueNumber });
+}
+
+function recordedFailureSha(issueBody) {
+  try {
+    return identityFromFailureState(issueBody).upstreamSha;
+  } catch {
+    return undefined;
+  }
 }
 
 function tokenRotationAction({ openIssueNumber, recordedExpiry, today }) {

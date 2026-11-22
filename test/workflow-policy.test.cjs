@@ -228,6 +228,47 @@ test("publication keeps untrusted build code outside the main-only Central crede
   assertApprovedActions(workflow);
 });
 
+test("head skips both jobs for a partial snapshot and only reports a failure when appropriate", () => {
+  const { runInNewContext } = require("node:vm");
+  const workflow = read(".github/workflows/publish.yml");
+  const build = /^    if: (.+)$/m.exec(job(workflow, "build"))[1];
+  const deploy = /^    if: (.+)$/m.exec(job(workflow, "deploy"))[1];
+  const failureReport =
+    /- name: Create, update, close, or skip the single failure issue\n\s+if: (.+)/.exec(
+      job(workflow, "report"),
+    )[1];
+
+  for (const [outcome, reason, buildResult, expected] of [
+    [
+      "skip",
+      "partial-snapshot-requires-retry",
+      "skipped",
+      [false, false, true],
+    ],
+    ["retry", "Official run in progress", "skipped", [false, false, false]],
+    ["publish", "snapshot-absent", "failure", [true, false, true]],
+    ["publish", "snapshot-absent", "success", [true, true, true]],
+  ]) {
+    const head = {
+      github: { ref: "refs/heads/main", event_name: "workflow_dispatch" },
+      inputs: { operation: "head" },
+      needs: {
+        qualify: { outputs: { outcome, reason } },
+        build: { result: buildResult },
+      },
+      always: () => true,
+    };
+
+    assert.deepEqual(
+      [build, deploy, failureReport].map((condition) =>
+        runInNewContext(condition, head, { timeout: 1000 }),
+      ),
+      expected,
+      reason,
+    );
+  }
+});
+
 test("dependency updates stay pinned, delayed, and require human review", () => {
   const policy = JSON.parse(read("renovate.json"));
 
